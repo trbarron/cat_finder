@@ -1,4 +1,4 @@
-  GNU nano 5.4                                               ./monitor_script.sh                                                        #!/bin/bash
+#!/bin/bash
 
 # Name of the Python script without the .py extension
 SCRIPT_NAME="cat_finder"
@@ -11,26 +11,3 @@ else
     echo "$SCRIPT_NAME is not running, starting it"
     nohup python ~/CatFinder/$SCRIPT_NAME.py &
 fi
-#!/bin/bash
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

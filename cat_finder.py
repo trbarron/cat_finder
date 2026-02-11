@@ -1,7 +1,9 @@
-import numpy as np 
+import numpy as np
 import boto3
+from botocore.exceptions import ClientError
 import os
 from datetime import datetime
+import sys
 import time
 import uuid
 import threading
@@ -19,6 +21,9 @@ class Classification:
 
 def get_label(labels, idx: int) -> str:
     """Retrieve the label corresponding to the classification index."""
+    if idx < 0 or idx >= len(labels):
+        print(f"Warning: label index {idx} out of range (0-{len(labels) - 1})")
+        return "unknown"
     return labels[idx]
 
 def is_image_too_dark(request, darkness_threshold=30):
@@ -91,9 +96,11 @@ def add_to_data_dynamodb(dynamodb_table, timestamp, image_name, cat_label, cat_c
     print(f"Added entry to data DynamoDB: {timestamp}, {image_name}, {cat_label}, {cat_confidence}")
 
 def add_to_url_dynamodb(dynamodb_table, s3_url):
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    unique_id = f"{timestamp}_{uuid.uuid4()}"
     dynamodb_table.put_item(
         Item={
-            'URL': 'url',
+            'URL': unique_id,
             'URL_value': s3_url
         }
     )
@@ -105,7 +112,7 @@ def upload_to_s3(s3_client, file_name, bucket, object_name=None):
 
     try:
         s3_client.upload_file(file_name, bucket, object_name)
-    except Exception as e:
+    except ClientError as e:
         print(f"Error uploading to S3: {e}")
         return None
 
@@ -118,70 +125,87 @@ def button_pressed(button_pressed_flag, button_press_lock, gpio, level, tick):
             button_pressed_flag[0] = True
         print("Button press detected")
 
-def process_detection(request, imx500, intrinsics, data_table, url_table, s3_client, labels, is_button_triggered=False, previous_label=None, darkness_threshold=30):
+def process_detection(request, imx500, intrinsics, data_table, url_table, s3_client, labels, s3_bucket=None, is_button_triggered=False, previous_label=None, darkness_threshold=30):
     if is_image_too_dark(request, darkness_threshold):
         print("Image is too dark - classifying as 'none'")
         current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         image_name = f"{current_datetime}_{uuid.uuid4()}.jpg"
-        
+
         # Record the "none" detection if button was pressed
         if is_button_triggered:
             add_to_data_dynamodb(data_table, current_datetime, image_name, "none", 100)
-            
+
             # Save and upload the dark image if button triggered
             dir_path = os.path.join('imgs', image_name)
             os.makedirs(os.path.dirname(dir_path), exist_ok=True)
             request.save("main", dir_path)
-            
-            s3_url = upload_to_s3(s3_client, dir_path, os.getenv('S3_BUCKET_NAME'), image_name)
+
+            s3_url = upload_to_s3(s3_client, dir_path, s3_bucket, image_name)
             if s3_url:
                 add_to_url_dynamodb(url_table, s3_url)
-            
-            if os.path.exists(dir_path):
-                os.remove(dir_path)
-                print(f"Image {dir_path} deleted.")
-        
+                if os.path.exists(dir_path):
+                    os.remove(dir_path)
+                    print(f"Image {dir_path} deleted.")
+            else:
+                print(f"S3 upload failed, keeping local image: {dir_path}")
+
         return "none"
-    
+
     # Proceed with normal classification for images that aren't too dark
     results = parse_classification_results(imx500, request, intrinsics, [])
-    
+
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     image_name = f"{current_datetime}_{uuid.uuid4()}.jpg"
-    
+
     if results:
         top_result = results[0]
         label = get_label(labels, top_result.idx)
         confidence = top_result.score
-        
+
         print(f'Predicted class: {label} with confidence: {confidence:.2%}')
-        
+
         if label == previous_label and confidence > 0.75 and label != 'neither':
             print(f"Consecutive detection confirmed: {label}")
-            
+
             add_to_data_dynamodb(data_table, current_datetime, image_name, label, int(confidence * 100))
-            
+
             if is_button_triggered:
                 dir_path = os.path.join('imgs', image_name)
                 os.makedirs(os.path.dirname(dir_path), exist_ok=True)
                 request.save("main", dir_path)
-                
-                s3_url = upload_to_s3(s3_client, dir_path, os.getenv('S3_BUCKET_NAME'), image_name)
+
+                s3_url = upload_to_s3(s3_client, dir_path, s3_bucket, image_name)
                 if s3_url:
                     add_to_url_dynamodb(url_table, s3_url)
-                
-                if os.path.exists(dir_path):
-                    os.remove(dir_path)
-                    print(f"Image {dir_path} deleted.")
-        
+                    if os.path.exists(dir_path):
+                        os.remove(dir_path)
+                        print(f"Image {dir_path} deleted.")
+                else:
+                    print(f"S3 upload failed, keeping local image: {dir_path}")
+
         return label
     return previous_label
 
+REQUIRED_ENV_VARS = [
+    'AWS_ACCESS_KEY_ID',
+    'AWS_SECRET_ACCESS_KEY',
+    'AWS_REGION',
+    'DYNAMODB_DATA_TABLE_NAME',
+    'DYNAMODB_URL_TABLE_NAME',
+    'S3_BUCKET_NAME',
+]
+
 def main():
     load_dotenv()
-    
+
+    missing = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
+    if missing:
+        sys.exit(f"Missing required environment variables: {', '.join(missing)}")
+
+    s3_bucket = os.getenv('S3_BUCKET_NAME')
+
     DARKNESS_THRESHOLD = 69 # midpoint between lights on and off in the room
-    
+
     dynamodb = boto3.resource('dynamodb',
         aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
         aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
@@ -246,13 +270,13 @@ def main():
             with button_press_lock:
                 if button_pressed_flag[0]:
                     print("Processing button-triggered image")
-                    previous_label = process_detection(request, imx500, intrinsics, data_table, url_table, s3_client, labels, 
-                                                       is_button_triggered=True, previous_label=previous_label, darkness_threshold=DARKNESS_THRESHOLD)
+                    previous_label = process_detection(request, imx500, intrinsics, data_table, url_table, s3_client, labels,
+                                                       s3_bucket=s3_bucket, is_button_triggered=True, previous_label=previous_label, darkness_threshold=DARKNESS_THRESHOLD)
                     button_pressed_flag[0] = False
                 else:
                     print("Processing regular cycle image")
-                    previous_label = process_detection(request, imx500, intrinsics, data_table, url_table, s3_client, labels, 
-                                                       previous_label=previous_label, darkness_threshold=DARKNESS_THRESHOLD)
+                    previous_label = process_detection(request, imx500, intrinsics, data_table, url_table, s3_client, labels,
+                                                       s3_bucket=s3_bucket, previous_label=previous_label, darkness_threshold=DARKNESS_THRESHOLD)
             
             request.release()
             time.sleep(41)
