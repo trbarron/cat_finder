@@ -2,3 +2,9 @@
 __pycache__/
 *.pyc
 imgs/
+mutants/
+.mutmut-cache/
+mutation_testing/*.txt
+mutation_testing/*.json
+mutation_testing/*survived*.md
+.pytest_cache/

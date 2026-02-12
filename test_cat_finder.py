@@ -1,3 +1,4 @@
+import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -48,6 +49,11 @@ class TestGetLabel(unittest.TestCase):
 
     def test_negative_index(self):
         self.assertEqual(get_label(self.labels, -1), "unknown")
+
+    def test_index_equal_len_is_unknown(self):
+        idx = len(self.labels)  # 3, one past the last valid index
+        result = get_label(self.labels, idx)
+        self.assertEqual(result, "unknown")
 
 
 class TestIsImageTooDark(unittest.TestCase):
@@ -373,11 +379,19 @@ class TestProcessDetectionNeitherLabel(unittest.TestCase):
 
 
 class TestMainEnvValidation(unittest.TestCase):
+    def _env_with_mutmut(self, env_dict):
+        """Preserve MUTANT_UNDER_TEST if set (needed for mutation testing)."""
+        mutant = os.environ.get('MUTANT_UNDER_TEST')
+        if mutant is not None:
+            env_dict['MUTANT_UNDER_TEST'] = mutant
+        return env_dict
+
     @patch('cat_finder.load_dotenv')
-    def test_missing_env_vars_exits(self, mock_dotenv):
+    @patch('cat_finder.boto3')
+    def test_missing_env_vars_exits(self, mock_boto3, mock_dotenv):
         """main() should sys.exit when required env vars are missing."""
         from cat_finder import main
-        with patch.dict('os.environ', {}, clear=True):
+        with patch.dict('os.environ', self._env_with_mutmut({}), clear=True):
             with self.assertRaises(SystemExit) as ctx:
                 main()
             error_msg = str(ctx.exception)
@@ -385,14 +399,15 @@ class TestMainEnvValidation(unittest.TestCase):
                 self.assertIn(var, error_msg)
 
     @patch('cat_finder.load_dotenv')
-    def test_partial_env_vars_exits(self, mock_dotenv):
+    @patch('cat_finder.boto3')
+    def test_partial_env_vars_exits(self, mock_boto3, mock_dotenv):
         """main() should exit listing only the missing vars."""
         from cat_finder import main
-        partial_env = {
+        partial_env = self._env_with_mutmut({
             'AWS_ACCESS_KEY_ID': 'key',
             'AWS_SECRET_ACCESS_KEY': 'secret',
             'AWS_REGION': 'us-east-1',
-        }
+        })
         with patch.dict('os.environ', partial_env, clear=True):
             with self.assertRaises(SystemExit) as ctx:
                 main()
