@@ -23,7 +23,7 @@ from pathlib import Path
 
 # LLM Configuration
 LLM_MODEL = "gpt-4o-mini"
-LLM_TEMPERATURE = 1
+LLM_TEMPERATURE = 1.0
 LLM_API_URL = "https://api.openai.com/v1/chat/completions"
 
 

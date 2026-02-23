@@ -81,8 +81,8 @@ def verify_test_kills_mutant(
     Verify that a newly added test kills a specific mutant.
 
     Proper verification:
-    1. Run test against ORIGINAL code → should PASS
-    2. Run test against MUTANT code → should FAIL (mutant killed!)
+    1. Run test against ORIGINAL code -- should PASS
+    2. Run test against MUTANT code -- should FAIL (mutant killed!)
 
     Args:
         mutant_id: The mutant ID
@@ -174,7 +174,7 @@ def _verify_mutahunter_mutant(
             return (False, f"Test PASSED with mutant (should fail). Mutant SURVIVED:\n{result.stdout[:500]}")
 
         # Test failed with mutant - mutant killed!
-        return (True, "✓ MUTANT KILLED!")
+        return (True, "MUTANT KILLED!")
 
     except Exception as e:
         # Restore original in case of error
@@ -184,7 +184,7 @@ def _verify_mutahunter_mutant(
             try:
                 shutil.copy2(backup_path, source_path)
                 backup_path.unlink()
-                print(f"      → Original file restored after error")
+                print(f"      Original file restored after error")
             except:
                 pass
         return (False, error_msg)
@@ -218,7 +218,7 @@ def _verify_mutmut_mutant(
         if apply_result.returncode != 0:
             return (False, f"Failed to apply mutant {mutant_id}: {apply_result.stderr}")
 
-        print(f"      → Applied mutant: {mutant_id}")
+        print(f"      Applied mutant: {mutant_id}")
 
         # Run test against mutant
         result = subprocess.run(
@@ -245,8 +245,8 @@ def _verify_mutmut_mutant(
             return (False, f"Test PASSED against mutant (should fail). Mutant SURVIVED:\n{result.stdout}")
 
         # Test failed with mutant - mutant killed!
-        print("      → Test fails with mutant code ✓ MUTANT KILLED!")
-        return (True, f"✓ Test passes with original, fails with mutant. MUTANT KILLED!")
+        print("      Test fails with mutant code - MUTANT KILLED!")
+        return (True, f"Test passes with original, fails with mutant. MUTANT KILLED!")
 
     except Exception as e:
         # Try to restore original

@@ -8,8 +8,8 @@ import urllib.request
 from pathlib import Path
 
 
-LLM_MODEL = "gpt-4o-mini"
-LLM_TEMPERATURE = 0.3  # Slightly higher for creative problem-solving
+LLM_MODEL = "gpt-5-mini"
+LLM_TEMPERATURE = 1  # gpt-5-mini only supports temperature=1
 LLM_API_URL = "https://api.openai.com/v1/chat/completions"
 
 
@@ -55,19 +55,19 @@ Your test should assert the CORRECT behavior (what the original code does), NOT 
 - Mutant code: `return x <= 10`
 - To kill this mutant, test with x=10:
   - Assert False (because 10 < 10 is False in original)
-  - This passes with original (10 < 10 = False ✓)
-  - This fails with mutant (10 <= 10 = True ✗) → MUTANT KILLED
+  - This passes with original (10 < 10 = False -- PASS)
+  - This fails with mutant (10 <= 10 = True -- FAIL) => MUTANT KILLED
 
 Your job is to analyze a failed test and fix it based on the error message.
 
 Common issues to fix:
 1. **Incorrect UUID mocking**: Use proper UUID objects, not strings
-   - ❌ mock_uuid.uuid4.return_value = 'fixed-uuid'
-   - ✅ from uuid import UUID; mock_uuid.uuid4.return_value = UUID('12345678-1234-5678-1234-567812345678')
+   - WRONG: mock_uuid.uuid4.return_value = 'fixed-uuid'
+   - RIGHT: from uuid import UUID; mock_uuid.uuid4.return_value = UUID('12345678-1234-5678-1234-567812345678')
 
 2. **Incorrect datetime mocking**: Use proper datetime objects
-   - ❌ mock_dt.now.return_value.strftime.return_value = '2020-01-02_03-04-05'
-   - ✅ from datetime import datetime; mock_dt.now.return_value = datetime(2020, 1, 2, 3, 4, 5)
+   - WRONG: mock_dt.now.return_value.strftime.return_value = '2020-01-02_03-04-05'
+   - RIGHT: from datetime import datetime; mock_dt.now.return_value = datetime(2020, 1, 2, 3, 4, 5)
 
 3. **Wrong regex patterns**: Match actual output format
    - Check if pattern expects hyphens in UUID but mock returns plain string
@@ -76,6 +76,17 @@ Common issues to fix:
    - Use correct Item keys from DynamoDB put_item calls
 
 5. **Incorrect assertions**: Match actual behavior
+
+6. **Accessing call_args incorrectly:**
+   - `call_args[0]` = positional args (tuple), `call_args[1]` = keyword args (dict)
+   - WRONG: `args, kwargs = mock.call_args[0]` then `kwargs['key']` -- this unpacks positional args, not kwargs
+   - RIGHT: `kwargs = mock.call_args[1]` then `kwargs['Item']['confidence']`
+   - RIGHT: `args = mock.call_args[0]` then `args[3]` for 4th positional arg
+
+7. **Patching in wrong scope:**
+   - WRONG: Patching `cat_finder.process_detection` then calling `process_detection()` directly -- the direct call bypasses the mock
+   - RIGHT: Call the function directly and mock its dependencies instead
+   - RIGHT: Or test via the code path that calls the function through the module
 
 Output JSON format:
 {
