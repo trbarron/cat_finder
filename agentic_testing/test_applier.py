@@ -85,11 +85,62 @@ def insert_test_method(
     return (True, "\n".join(new_lines), "")
 
 
+def remove_test_method(content: str, class_name: str, method_name: str) -> tuple[bool, str, str]:
+    """
+    Remove a test method from a test class.
+
+    Args:
+        content: Full content of the test file
+        class_name: Name of the test class
+        method_name: Name of the method to remove
+
+    Returns:
+        (success, new_content, error_message)
+    """
+    lines = content.split("\n")
+
+    # Find the test method
+    method_pattern = re.compile(rf"^\s+def {re.escape(method_name)}\(")
+    method_start = None
+
+    for i, line in enumerate(lines):
+        if method_pattern.match(line):
+            method_start = i
+            break
+
+    if method_start is None:
+        return (False, content, f"Method {method_name} not found")
+
+    # Find the end of the method (next method or class end)
+    base_indent = len(lines[method_start]) - len(lines[method_start].lstrip())
+    method_end = len(lines)
+
+    for i in range(method_start + 1, len(lines)):
+        line = lines[i]
+        if line.strip() == "":
+            continue
+        current_indent = len(line) - len(line.lstrip())
+        # If we hit something at the same or lower indentation, method has ended
+        if current_indent <= base_indent:
+            method_end = i
+            break
+
+    # Remove the method (and any blank lines before it)
+    remove_start = method_start
+    while remove_start > 0 and lines[remove_start - 1].strip() == "":
+        remove_start -= 1
+
+    new_lines = lines[:remove_start] + lines[method_end:]
+    return (True, "\n".join(new_lines), "")
+
+
 def apply_test(
     test_file_path: Path,
     test_class: str,
     test_method_code: str,
     dry_run: bool = False,
+    replace: bool = False,
+    method_name: str = None,
 ) -> tuple[bool, str]:
     """
     Apply a generated test to a test file.
@@ -99,6 +150,8 @@ def apply_test(
         test_class: Name of the test class to add the method to
         test_method_code: The generated test method code
         dry_run: If True, don't actually write the file
+        replace: If True, replace existing method with same name
+        method_name: Required if replace=True, name of method to replace
 
     Returns:
         (success, message)
@@ -111,17 +164,29 @@ def apply_test(
     except Exception as e:
         return (False, f"Error reading test file: {e}")
 
+    # If replacing, remove the old method first
+    if replace:
+        if not method_name:
+            return (False, "method_name required when replace=True")
+
+        success, content, error = remove_test_method(content, test_class, method_name)
+        if not success:
+            # Method might not exist yet, which is fine
+            pass
+
     success, new_content, error = insert_test_method(content, test_class, test_method_code)
 
     if not success:
         return (False, error)
 
     if dry_run:
-        return (True, f"[DRY RUN] Would write to {test_file_path}")
+        action = "replace" if replace else "add"
+        return (True, f"[DRY RUN] Would {action} test in {test_file_path}")
 
     try:
         test_file_path.write_text(new_content)
-        return (True, f"Successfully added test to {test_file_path}")
+        action = "replaced" if replace else "added"
+        return (True, f"Successfully {action} test in {test_file_path}")
     except Exception as e:
         return (False, f"Error writing test file: {e}")
 

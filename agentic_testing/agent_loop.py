@@ -19,6 +19,8 @@ from typing import Any
 from .test_generator import generate_test_code
 from .test_applier import apply_test
 from .verifier import verify_test_kills_mutant
+from .test_fixer import fix_failed_test
+from .error_extractor import extract_pytest_error
 
 
 def load_triage_results(report_path: Path) -> list[dict[str, Any]]:
@@ -43,6 +45,7 @@ def process_mutant(
     api_key: str,
     interactive: bool = True,
     dry_run: bool = False,
+    max_iterations: int = 3,
 ) -> dict[str, Any]:
     """
     Process a single mutant: generate test, apply, verify.
@@ -92,92 +95,155 @@ def process_mutant(
 
     existing_test_content = test_file_path.read_text()
 
-    # Step 1: Generate test code
-    print(f"\n1. Generating test code...")
-    print(f"   Agent prompt: {agent_prompt[:100]}...")
-
     # Get source snippet for better context
     source_snippet = mutant_entry.get("source_snippet", "")
     diff = mutant_entry.get("diff", "")
-
-    # Combine diff and source snippet for full context
     full_source_context = f"{diff}\n\n{source_snippet}" if diff and source_snippet else (source_snippet or diff or "")
 
-    test_result = generate_test_code(
-        agent_prompt, test_file_path, existing_test_content, api_key, full_source_context
-    )
+    # Iteration loop: try to generate and fix test up to max_iterations times
+    test_class = None
+    test_method_name = None
+    test_code = None
+    explanation = None
 
-    if not test_result.get("success"):
-        error_msg = test_result.get('error', 'Unknown error')
-        print(f"\n   ERROR: Test generation failed: {error_msg}")
-        return {
-            "mutant_id": mutant_id,
-            "status": "error",
-            "reason": f"Test generation failed: {error_msg}",
-        }
+    for iteration in range(1, max_iterations + 1):
+        iteration_suffix = f" (attempt {iteration}/{max_iterations})" if iteration > 1 else ""
 
-    test_class = test_result["test_class"]
-    test_method_name = test_result["test_method_name"]
-    test_code = test_result["test_code"]
-    explanation = test_result["explanation"]
+        # Step 1: Generate or fix test code
+        if iteration == 1:
+            print(f"\n1. Generating test code...")
+            print(f"   Agent prompt: {agent_prompt[:100]}...")
 
-    print(f"\n2. Generated test:")
-    print(f"   Class: {test_class}")
-    print(f"   Method: {test_method_name}")
-    print(f"   Explanation: {explanation}")
-    print(f"\n   Code:")
-    print("   " + "\n   ".join(test_code.split("\n")))
+            test_result = generate_test_code(
+                agent_prompt, test_file_path, existing_test_content, api_key, full_source_context
+            )
+        else:
+            # Iteration > 1: Fix the failed test
+            print(f"\n1. Fixing test{iteration_suffix}...")
+            test_result = fix_failed_test(
+                test_code,
+                error_message,
+                test_class,
+                test_method_name,
+                full_source_context,
+                agent_prompt,
+                api_key,
+            )
 
-    # Step 2: Interactive approval
-    if interactive and not dry_run:
-        print(f"\n3. Approve this test? [y/n/skip/quit]: ", end="")
-        response = input().strip().lower()
+        if not test_result.get("success"):
+            error_msg = test_result.get('error', 'Unknown error')
+            print(f"\n   ERROR: Test {'generation' if iteration == 1 else 'fix'} failed: {error_msg}")
+            if iteration == max_iterations:
+                return {
+                    "mutant_id": mutant_id,
+                    "status": "error",
+                    "reason": f"Test {'generation' if iteration == 1 else 'fix'} failed after {max_iterations} attempts: {error_msg}",
+                }
+            continue
 
-        if response == "quit" or response == "q":
-            return {"mutant_id": mutant_id, "status": "quit", "reason": "User quit"}
-        elif response == "skip" or response == "s":
-            return {"mutant_id": mutant_id, "status": "skipped", "reason": "User skipped"}
-        elif response != "y" and response != "yes":
-            return {"mutant_id": mutant_id, "status": "rejected", "reason": "User rejected"}
+        test_class = test_result.get("test_class", test_class)
+        test_method_name = test_result.get("test_method_name", test_method_name)
+        test_code = test_result["test_code"]
+        explanation = test_result.get("explanation", explanation)
 
-    # Step 3: Apply test
-    print(f"\n4. Applying test to {test_file_path}...")
-    apply_success, apply_msg = apply_test(
-        test_file_path, test_class, test_code, dry_run=dry_run
-    )
+        print(f"\n2. {'Generated' if iteration == 1 else 'Fixed'} test{iteration_suffix}:")
+        print(f"   Class: {test_class}")
+        print(f"   Method: {test_method_name}")
+        print(f"   Explanation: {explanation}")
+        if iteration > 1 and "changes" in test_result:
+            print(f"   Changes: {test_result['changes']}")
+        print(f"\n   Code:")
+        print("   " + "\n   ".join(test_code.split("\n")))
 
-    if not apply_success:
-        return {
-            "mutant_id": mutant_id,
-            "status": "error",
-            "reason": f"Failed to apply test: {apply_msg}",
-        }
+        # Step 2: Interactive approval (only on first iteration or if user wants to approve fixes)
+        if interactive and not dry_run and iteration == 1:
+            print(f"\n3. Approve this test? [y/n/skip/quit]: ", end="")
+            response = input().strip().lower()
 
-    print(f"   {apply_msg}")
+            if response == "quit" or response == "q":
+                return {"mutant_id": mutant_id, "status": "quit", "reason": "User quit"}
+            elif response == "skip" or response == "s":
+                return {"mutant_id": mutant_id, "status": "skipped", "reason": "User skipped"}
+            elif response != "y" and response != "yes":
+                return {"mutant_id": mutant_id, "status": "rejected", "reason": "User rejected"}
 
-    # Step 4: Verify test
-    if not dry_run:
-        print(f"\n5. Verifying test...")
-        verify_success, verify_msg = verify_test_kills_mutant(
-            mutant_id, test_file_path, package_dir
+        # Step 3: Apply test
+        step_num = 4 if (interactive and not dry_run and iteration == 1) else 3
+        print(f"\n{step_num}. Applying test to {test_file_path}...")
+
+        # If iteration > 1, replace the existing test
+        apply_success, apply_msg = apply_test(
+            test_file_path,
+            test_class,
+            test_code,
+            dry_run=dry_run,
+            replace=(iteration > 1),
+            method_name=test_method_name if iteration > 1 else None,
         )
 
-        print(f"   {verify_msg}")
+        if not apply_success:
+            if iteration == max_iterations:
+                return {
+                    "mutant_id": mutant_id,
+                    "status": "error",
+                    "reason": f"Failed to apply test after {max_iterations} attempts: {apply_msg}",
+                }
+            print(f"   ERROR: {apply_msg}")
+            continue
 
-        if not verify_success:
+        print(f"   {apply_msg}")
+
+        # Step 4: Verify test
+        if not dry_run:
+            step_num += 1
+            print(f"\n{step_num}. Verifying test{iteration_suffix}...")
+            verify_success, verify_msg = verify_test_kills_mutant(
+                mutant_id, test_file_path, package_dir
+            )
+
+            if verify_success:
+                print(f"   ✓ {verify_msg}")
+                return {
+                    "mutant_id": mutant_id,
+                    "status": "success",
+                    "test_class": test_class,
+                    "test_method_name": test_method_name,
+                    "explanation": explanation,
+                    "iterations": iteration,
+                }
+            else:
+                print(f"   ✗ Test failed")
+                # Extract error for next iteration
+                error_info = extract_pytest_error(verify_msg)
+                error_message = error_info.get("error_message", verify_msg)
+                print(f"   Error: {error_message[:200]}...")
+
+                if iteration == max_iterations:
+                    return {
+                        "mutant_id": mutant_id,
+                        "status": "verification_failed",
+                        "reason": f"Test failed verification after {max_iterations} attempts",
+                        "test_applied": True,
+                        "last_error": error_message,
+                    }
+
+                print(f"   → Attempting to fix the test...")
+        else:
+            # Dry run - consider it a success
             return {
                 "mutant_id": mutant_id,
-                "status": "verification_failed",
-                "reason": verify_msg,
-                "test_applied": True,
+                "status": "success",
+                "test_class": test_class,
+                "test_method_name": test_method_name,
+                "explanation": explanation,
+                "iterations": iteration,
             }
 
+    # Should not reach here, but just in case
     return {
         "mutant_id": mutant_id,
-        "status": "success",
-        "test_class": test_class,
-        "test_method_name": test_method_name,
-        "explanation": explanation,
+        "status": "error",
+        "reason": f"Unexpected: exhausted {max_iterations} iterations",
     }
 
 

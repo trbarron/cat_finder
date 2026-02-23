@@ -101,8 +101,11 @@ def verify_test_kills_mutant(
             timeout=60,
         )
 
+        full_output = f"{result.stdout}\n{result.stderr}"
+
         if result.returncode != 0:
-            return (False, f"New test failed:\n{result.stdout}\n{result.stderr}")
+            # Return full output for error extraction
+            return (False, full_output)
 
     except Exception as e:
         return (False, f"Error running pytest: {e}")

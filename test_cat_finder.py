@@ -245,6 +245,21 @@ class TestAddToUrlDynamodb(unittest.TestCase):
                 pattern = r'\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_\w{8}-\w{4}-\w{4}-\w{4}-\w{12}'
                 self.assertRegex(url, pattern)
 
+    def test_timestamp_format_in_unique_id(self):
+        """Verify that the unique_id generated includes a timestamp in the format %y-%m-%d_%h-%m-%s."""
+        import re
+        mock_table = MagicMock()
+        expected_uuid = 'fixed-uuid'
+        with patch('cat_finder.uuid') as mock_uuid:
+            with patch('cat_finder.datetime') as mock_datetime:
+                mock_datetime.now.return_value.strftime.return_value = '20-01-02_03-04-05'
+                mock_uuid.uuid4.return_value = expected_uuid
+                add_to_url_dynamodb(mock_table, 's3://bucket/object')
+                item = mock_table.put_item.call_args[1]['Item']
+                unique_id = item['URL']
+                pattern = r'\d{2}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_\w{8}-\w{4}-\w{4}-\w{4}-\w{12}'
+                self.assertRegex(unique_id, pattern)
+
 
 class TestUploadToS3(unittest.TestCase):
     def test_success(self):
@@ -380,6 +395,39 @@ class TestProcessDetection(unittest.TestCase):
         self.assertEqual(result, "checo")
         # Image should NOT be deleted when upload fails
         mock_remove.assert_not_called()
+
+    def test_add_to_data_dynamodb_with_none_image_name(self):
+        """Test that adding an entry with None as the image name does not store data in DynamoDB."""
+        self.request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+        result = process_detection(
+            self.request, self.imx500, self.intrinsics,
+            self.data_table, self.url_table, self.s3_client,
+            self.labels, s3_bucket="bucket",
+            is_button_triggered=True, darkness_threshold=30
+        )
+        self.assertEqual(result, "none")
+        self.data_table.put_item.assert_not_called()
+
+    def test_button_triggered_with_none_image_name(self):
+        """Test that adding an entry with None as the fourth argument to add_to_data_dynamodb is handled correctly."""
+        self.request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+        result = process_detection(
+            self.request, self.imx500, self.intrinsics,
+            self.data_table, self.url_table, self.s3_client,
+            self.labels, s3_bucket="bucket",
+            is_button_triggered=True, darkness_threshold=30
+        )
+        self.assertEqual(result, "none")
+        self.data_table.put_item.assert_called_once()
+        self.data_table.put_item.assert_called_with(
+            Item={
+                'Date': '2025-01-15',
+                'Timestamp': '2025-01-15_12-30-00',
+                'image_name': None,
+                'label': 'none',
+                'confidence': 100
+            }
+        )
 
 
 class TestButtonPressed(unittest.TestCase):
