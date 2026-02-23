@@ -37,7 +37,7 @@ from .triage import (
 from .agent_loop import run_agent_loop
 
 
-def run_mutmut(package_dir: Path) -> bool:
+def run_mutmut(package_dir: Path, source_file: str = "cat_finder.py") -> bool:
     """Run mutmut to generate mutations."""
     print("Step 1: Running mutmut to generate mutations...")
     print("=" * 80)
@@ -50,7 +50,7 @@ def run_mutmut(package_dir: Path) -> bool:
         str(mutmut_wrapper),
         "run",
         "--paths-to-mutate",
-        "cat_finder.py",
+        source_file,
         "--test-time-base=10.0",
     ]
 
@@ -78,6 +78,34 @@ def run_mutmut(package_dir: Path) -> bool:
     except Exception as e:
         print(f"Error running mutmut: {e}", file=sys.stderr)
         return False
+
+
+def run_mutahunter(
+    package_dir: Path,
+    source_file: str = "cat_finder.py",
+    test_file: str = "test_cat_finder.py",
+    model: str = "gpt-4o-mini",
+) -> bool:
+    """Run mutahunter to generate LLM-powered mutations."""
+    print("Step 1: Running mutahunter to generate mutations...")
+    print("=" * 80)
+    print("Note: mutahunter uses LLM to generate realistic mutations (slower but smarter)")
+
+    cache_dir = package_dir / ".agentic_testing_cache"
+    cache_dir.mkdir(exist_ok=True)
+
+    from .run_mutahunter import run_mutahunter as run_mh
+
+    success = run_mh(source_file, test_file, str(cache_dir), model)
+
+    if success:
+        # Convert mutahunter output to mutmut-compatible format
+        # For now, just create a results file
+        results_output = cache_dir / "mutmut_results.txt"
+        results_output.write_text("# mutahunter results\n# TODO: parse mutahunter output\n")
+        print(f"\nResults written to {results_output}")
+
+    return success
 
 
 def triage_mutants(
@@ -265,12 +293,28 @@ def main() -> int:
     parser.add_argument(
         "--skip-mutmut",
         action="store_true",
-        help="Skip running mutmut (use existing results)",
+        help="Skip running mutation generation (use existing results)",
     )
     parser.add_argument(
         "--skip-triage",
         action="store_true",
         help="Skip triage step (use existing triage results from triage.json)",
+    )
+    parser.add_argument(
+        "--mutation-engine",
+        choices=["mutmut", "mutahunter"],
+        default="mutmut",
+        help="Mutation engine: mutmut (rule-based, fast) or mutahunter (LLM-powered, realistic)",
+    )
+    parser.add_argument(
+        "--source-file",
+        default="cat_finder.py",
+        help="Source file to mutate (default: cat_finder.py)",
+    )
+    parser.add_argument(
+        "--test-file",
+        default="test_cat_finder.py",
+        help="Test file (default: test_cat_finder.py)",
     )
     args = parser.parse_args()
 
@@ -288,12 +332,19 @@ def main() -> int:
     print("║" + " " * 15 + "Inspired by Meta's ACH System" + " " * 34 + "║")
     print("╚" + "=" * 78 + "╝")
 
-    # Step 1: Run mutmut (unless skipped)
+    # Step 1: Run mutation engine (unless skipped)
     if not args.skip_mutmut:
-        if not run_mutmut(package_dir):
+        if args.mutation_engine == "mutmut":
+            if not run_mutmut(package_dir, args.source_file):
+                return 1
+        elif args.mutation_engine == "mutahunter":
+            if not run_mutahunter(package_dir, args.source_file, args.test_file):
+                return 1
+        else:
+            print(f"Unknown mutation engine: {args.mutation_engine}", file=sys.stderr)
             return 1
     else:
-        print("Skipping mutmut run (using existing results)")
+        print(f"Skipping {args.mutation_engine} run (using existing results)")
 
     # Step 2: Triage mutants (unless skipped)
     triage_results = []
