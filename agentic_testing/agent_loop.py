@@ -372,6 +372,7 @@ def process_mutant(
                 error_info = extract_pytest_error(verify_msg)
                 full_trace = error_info.get("full_trace", "")
                 short_error = error_info.get("error_message", "")
+                # Prefer full trace so the fixer LLM sees the complete picture
                 error_message = full_trace if full_trace else (short_error if short_error else verify_msg)
 
                 # Show concise error
