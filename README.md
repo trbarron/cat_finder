@@ -122,6 +122,7 @@ mutmut run
 
 ```bash
 mutmut results > ./mutation_testing/mutmut_results.txt
+python3 mutation_testing/run_mutmut.py results > ./mutation_testing/mutmut_results.txt
 ```
 
 ### Step 4: Analyze Survived Mutants
@@ -150,3 +151,81 @@ This command will:
 1. Analyze the first 5 survived mutants.
 2. Send the context to the configured LLM (default: gpt-4o-mini).
 3. Save the LLM's analysis (including whether to write a test and a suggested prompt) into `survived_test.json`.
+
+## Agentic Testing Loop
+
+The **Agentic Testing Loop** is an automated system inspired by Meta's ACH (Automated Compliance Hardening) that uses LLMs to automatically generate tests for survived mutants.
+
+### Overview
+
+Instead of manually writing tests for survived mutants, the agentic loop:
+1. Runs mutmut to generate mutations
+2. **Triages** survived mutants with LLM (filters out print statements, cosmetic changes, etc.)
+3. **Generates test code** automatically with LLM
+4. **Applies tests** to test files
+5. **Verifies** tests work
+6. **Iterates** until coverage improves
+
+### Usage
+
+#### Interactive Mode (Recommended)
+
+Human approves each generated test:
+
+```bash
+python -m agentic_testing.cli
+```
+
+You'll be prompted to review each test before it's applied:
+```
+Generated test:
+   Class: TestGetLabel
+   Method: test_index_equal_to_length
+   Explanation: Verifies bounds checking for edge case
+
+Approve this test? [y/n/skip/quit]:
+```
+
+#### Auto Mode
+
+Automatically generate tests and create a PR:
+
+```bash
+python -m agentic_testing.cli --auto
+```
+
+#### Other Options
+
+```bash
+# Limit to first 5 mutants (for testing)
+python -m agentic_testing.cli --limit 5
+
+# Dry run (preview without modifying files)
+python -m agentic_testing.cli --dry-run
+
+# Skip mutmut run (use existing results)
+python -m agentic_testing.cli --skip-mutmut
+```
+
+### Requirements
+
+```bash
+export OPENAI_API_KEY="your-api-key"
+```
+
+### How It Works
+
+The system uses a multi-step workflow:
+
+1. **Mutation Generation**: Uses mutmut to create code mutations
+2. **Smart Triage**: LLM filters out mutations that don't need tests (print statements, cosmetic changes)
+3. **Test Generation**: LLM generates targeted test code for critical mutations
+4. **Verification**: Runs pytest to ensure tests pass
+5. **Iteration**: Repeats for all triaged mutants
+
+For more details, see [`agentic_testing/README.md`](agentic_testing/README.md).
+
+### Inspiration
+
+This system is based on Meta's ACH approach:
+- [Revolutionizing software testing: LLM-powered bug catchers at Meta](https://engineering.fb.com/2025/02/05/security/revolutionizing-software-testing-llm-powered-bug-catchers-meta-ach/)

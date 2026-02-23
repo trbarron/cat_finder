@@ -264,7 +264,9 @@ def generate_report(entries: list[dict], results_path: Path) -> str:
                 lines.append("")
                 lines.append("**Agent prompt:**")
                 lines.append("")
-                lines.append(f"> {agent_prompt}")
+                lines.append("```text")
+                lines.append(agent_prompt)
+                lines.append("```")
             lines.append("")
 
         lines.append("---")

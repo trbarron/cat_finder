@@ -75,6 +75,30 @@ class TestIsImageTooDark(unittest.TestCase):
         # Should return False (not dark) on error
         self.assertFalse(is_image_too_dark(request))
 
+    def test_image_equal_to_threshold_is_not_dark(self):
+        request = MagicMock()
+        request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
+        self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
+
+    def test_make_array_called_with_main(self):
+        request = MagicMock()
+        request.make_array.return_value = np.full((10, 10, 3), 150, dtype=np.uint8)
+        result = is_image_too_dark(request, darkness_threshold=30)
+        request.make_array.assert_called_once_with('main')
+        self.assertFalse(result)
+
+    def test_image_equal_to_default_threshold_is_not_dark(self):
+        request = MagicMock()
+        request.make_array.return_value = np.full((10, 10, 3), 30, dtype=np.uint8)
+        result = is_image_too_dark(request)
+        self.assertFalse(result)
+        request.make_array.assert_called_once_with('main')
+
+    def test_default_darkness_threshold(self):
+        import inspect
+        sig = inspect.signature(is_image_too_dark)
+        self.assertEqual(sig.parameters['darkness_threshold'].default, 30)
+
 
 class TestParseClassificationResults(unittest.TestCase):
     def test_valid_output(self):
@@ -113,6 +137,36 @@ class TestParseClassificationResults(unittest.TestCase):
         last = [Classification(0, 0.5)]
         results = parse_classification_results(imx500, request, intrinsics, last)
         self.assertEqual(results, last)
+
+    def test_get_outputs_called_with_request_metadata(self):
+        imx500 = MagicMock()
+        request = MagicMock()
+        meta = object()
+        request.get_metadata.return_value = meta
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+        imx500.get_outputs.return_value = [np.array([[0.1, 0.9, 0.0]])]
+
+        results = parse_classification_results(imx500, request, intrinsics, [])
+        imx500.get_outputs.assert_called_once_with(meta)
+        self.assertEqual(results[0].idx, 1)
+        self.assertAlmostEqual(results[0].score, 0.9)
+
+    def test_more_than_three_classes_limits_to_three(self):
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+        imx500.get_outputs.return_value = [np.array([[0.1, 0.9, 0.2, 0.8, 0.05]])]
+
+        results = parse_classification_results(imx500, request, intrinsics, [])
+        self.assertEqual(len(results), 3)
+        self.assertEqual(results[0].idx, 1)
+        self.assertAlmostEqual(results[0].score, 0.9)
+        self.assertEqual(results[1].idx, 3)
+        self.assertAlmostEqual(results[1].score, 0.8)
+        self.assertEqual(results[2].idx, 2)
+        self.assertAlmostEqual(results[2].score, 0.2)
 
     def test_with_softmax_enabled(self):
         imx500 = MagicMock()
@@ -158,6 +212,22 @@ class TestAddToUrlDynamodb(unittest.TestCase):
         self.assertNotEqual(item['URL'], 'url')
         # Key should contain a UUID (36 chars with dashes)
         self.assertGreater(len(item['URL']), 36)
+
+
+    @patch('cat_finder.uuid')
+    @patch('cat_finder.datetime')
+    def test_add_to_url_includes_timestamp(self, mock_datetime, mock_uuid):
+        mock_datetime.now.return_value.strftime.return_value = '2020-01-02_03-04-05'
+        mock_uuid.uuid4.return_value = 'fixed-uuid'
+        mock_table = MagicMock()
+        s3_url = 's3://bucket/object'
+
+        add_to_url_dynamodb(mock_table, s3_url)
+
+        mock_table.put_item.assert_called_once()
+        item = mock_table.put_item.call_args[1]['Item']
+        expected = '2020-01-02_03-04-05_fixed-uuid'
+        self.assertTrue(any(expected in str(v) for v in item.values()))
 
 
 class TestUploadToS3(unittest.TestCase):
