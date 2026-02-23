@@ -470,6 +470,23 @@ def run_agent_loop(
         mutant_id = mutant_entry.get("mutant_id", "unknown")
         logger.log_mutant_start(mutant_id, i + 1, len(triage_results))
 
+        # Sanity check before each mutant: verify tests still pass
+        print(f"→ Sanity check: verifying all tests pass...")
+        tests_pass, test_output = check_tests_pass(package_dir)
+
+        if not tests_pass:
+            print(f"✗ Sanity check failed before processing {mutant_id}!")
+            print("Tests are broken, likely from a previous mutation.")
+            print("\nStopping to prevent further damage.")
+            results.append({
+                "mutant_id": mutant_id,
+                "status": "sanity_check_failed",
+                "reason": "Tests broken before processing this mutant",
+            })
+            break
+
+        print(f"✓ All tests pass")
+
         # Check if this mutant is already killed by existing tests
         print(f"→ Checking if mutant is already killed by existing tests...")
         mutant_file_path = mutant_entry.get("mutant_file") if mutation_engine == "mutahunter" else None
@@ -485,10 +502,11 @@ def run_agent_loop(
 
             if already_killed:
                 print(f"✓ Mutant already killed by existing tests - skipping")
+                print(f"  (A test from a previous mutant already kills this one)")
                 results.append({
                     "mutant_id": mutant_id,
                     "status": "already_killed",
-                    "reason": "Mutant already killed by existing tests",
+                    "reason": "Mutant already killed by existing tests (likely from previous mutation)",
                 })
                 logger.log_result(mutant_id, "already_killed", "Killed by previous test")
                 continue
@@ -508,19 +526,6 @@ def run_agent_loop(
         logger.log_result(
             mutant_id, result["status"], result.get("reason", result.get("explanation", ""))
         )
-
-        # Verify tests still pass after processing this mutant (especially after rollback)
-        if result["status"] in ["verification_failed", "error"]:
-            print(f"\n   → Verifying tests still pass after rollback...")
-            tests_pass, _ = check_tests_pass(package_dir)
-
-            if not tests_pass:
-                print(f"   ✗ ERROR: Tests are broken after processing {mutant_id}!")
-                print(f"   This means rollback failed or a broken test wasn't rolled back.")
-                print(f"   Stopping to prevent further damage.")
-                break
-            else:
-                print(f"   ✓ Tests still pass - rollback successful")
 
         if result["status"] == "quit":
             print("\nUser requested quit. Stopping.")
