@@ -91,6 +91,24 @@ def run_mutahunter(
     print("=" * 80)
     print("Note: mutahunter uses LLM to generate realistic mutations (slower but smarter)")
 
+    # Check if mutahunter is available
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["mutahunter", "--version"],
+            capture_output=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        print("\n❌ mutahunter not installed.", file=sys.stderr)
+        print("\nTo install:", file=sys.stderr)
+        print("  pip install mutahunter certifi httpx litellm", file=sys.stderr)
+        print("\nOr use mutmut (default):", file=sys.stderr)
+        print("  python -m agentic_testing.cli", file=sys.stderr)
+        return False
+    except Exception as e:
+        print(f"\n⚠️  Warning: Could not verify mutahunter installation: {e}", file=sys.stderr)
+
     cache_dir = package_dir / ".agentic_testing_cache"
     cache_dir.mkdir(exist_ok=True)
 

@@ -56,7 +56,18 @@ def run_mutahunter(
         print("Error: mutahunter timed out after 10 minutes", file=sys.stderr)
         return False
     except FileNotFoundError:
-        print("Error: mutahunter not installed. Install with: pip install mutahunter", file=sys.stderr)
+        print("\nError: mutahunter not installed.", file=sys.stderr)
+        print("\nTo install mutahunter:", file=sys.stderr)
+        print("  pip install mutahunter certifi httpx litellm", file=sys.stderr)
+        print("\nOr use mutmut instead:", file=sys.stderr)
+        print("  python -m agentic_testing.cli --mutation-engine mutmut", file=sys.stderr)
+        return False
+    except ModuleNotFoundError as e:
+        print(f"\nError: Missing dependency for mutahunter: {e}", file=sys.stderr)
+        print("\nTo fix, install all dependencies:", file=sys.stderr)
+        print("  pip install mutahunter certifi httpx litellm", file=sys.stderr)
+        print("\nOr use mutmut instead:", file=sys.stderr)
+        print("  python -m agentic_testing.cli --mutation-engine mutmut", file=sys.stderr)
         return False
     except Exception as e:
         print(f"Error running mutahunter: {e}", file=sys.stderr)
