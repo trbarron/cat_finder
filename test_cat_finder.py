@@ -50,6 +50,10 @@ class TestGetLabel(unittest.TestCase):
     def test_negative_index(self):
         self.assertEqual(get_label(self.labels, -1), "unknown")
 
+    def test_index_equal_to_length_of_labels(self):
+        """Test that get_label returns 'unknown' when index is equal to the length of labels."""
+        self.assertEqual(get_label(self.labels, len(self.labels)), 'unknown')
+
 
 class TestIsImageTooDark(unittest.TestCase):
     def test_dark_image(self):
@@ -350,9 +354,6 @@ class TestProcessDetection(unittest.TestCase):
         self.assertEqual(result, "checo")
         # Image should NOT be deleted when upload fails
         mock_remove.assert_not_called()
-
-
-
 class TestButtonPressed(unittest.TestCase):
     def test_sets_flag_on_falling_edge(self):
         flag = [False]
@@ -371,8 +372,6 @@ class TestButtonPressed(unittest.TestCase):
         lock = MagicMock()
         button_pressed(flag, lock, gpio=17, level=0, tick=0)
         lock.__enter__.assert_called()
-
-
 class TestProcessDetectionNeitherLabel(unittest.TestCase):
     def setUp(self):
         self.request = MagicMock()
