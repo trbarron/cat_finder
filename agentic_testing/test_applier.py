@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""
+Apply generated test code to test files.
+"""
+
+import re
+from pathlib import Path
+
+
+def find_test_class(content: str, class_name: str) -> tuple[int, int] | None:
+    """
+    Find the start and end line numbers of a test class.
+
+    Returns:
+        (start_line, end_line) as 0-indexed line numbers, or None if not found
+    """
+    lines = content.split("\n")
+
+    # Find class definition
+    class_pattern = re.compile(rf"^class {re.escape(class_name)}\(.*\):")
+    start_line = None
+
+    for i, line in enumerate(lines):
+        if class_pattern.match(line):
+            start_line = i
+            break
+
+    if start_line is None:
+        return None
+
+    # Find end of class (next class definition or end of file)
+    end_line = len(lines)
+    base_indent = len(lines[start_line]) - len(lines[start_line].lstrip())
+
+    for i in range(start_line + 1, len(lines)):
+        line = lines[i]
+        if line.strip() == "":
+            continue
+        current_indent = len(line) - len(line.lstrip())
+        # If we hit something at the same or lower indentation, class has ended
+        if current_indent <= base_indent and line.strip():
+            end_line = i
+            break
+
+    return (start_line, end_line)
+
+
+def insert_test_method(
+    content: str, class_name: str, test_method_code: str
+) -> tuple[bool, str, str]:
+    """
+    Insert a test method into a test class.
+
+    Args:
+        content: Full content of the test file
+        class_name: Name of the test class to insert into
+        test_method_code: The test method code (with proper indentation)
+
+    Returns:
+        (success, new_content, error_message)
+    """
+    class_location = find_test_class(content, class_name)
+    if class_location is None:
+        return (False, content, f"Could not find class {class_name}")
+
+    start_line, end_line = class_location
+    lines = content.split("\n")
+
+    # Insert the new method at the end of the class
+    # Find the last non-empty line in the class
+    insert_line = end_line
+    for i in range(end_line - 1, start_line, -1):
+        if lines[i].strip():
+            insert_line = i + 1
+            break
+
+    # Add blank line before the new method if needed
+    if insert_line > 0 and lines[insert_line - 1].strip():
+        new_lines = (
+            lines[:insert_line] + [""] + [test_method_code] + lines[insert_line:]
+        )
+    else:
+        new_lines = lines[:insert_line] + [test_method_code] + lines[insert_line:]
+
+    return (True, "\n".join(new_lines), "")
+
+
+def remove_test_method(content: str, class_name: str, method_name: str) -> tuple[bool, str, str]:
+    """
+    Remove a test method from a test class, including any decorators.
+
+    Args:
+        content: Full content of the test file
+        class_name: Name of the test class
+        method_name: Name of the method to remove
+
+    Returns:
+        (success, new_content, error_message)
+    """
+    lines = content.split("\n")
+
+    # Find the test method
+    method_pattern = re.compile(rf"^\s+def {re.escape(method_name)}\(")
+    method_start = None
+
+    for i, line in enumerate(lines):
+        if method_pattern.match(line):
+            method_start = i
+            break
+
+    if method_start is None:
+        return (False, content, f"Method {method_name} not found")
+
+    # Find the end of the method (next method or class end)
+    base_indent = len(lines[method_start]) - len(lines[method_start].lstrip())
+    method_end = len(lines)
+
+    for i in range(method_start + 1, len(lines)):
+        line = lines[i]
+        if line.strip() == "":
+            continue
+        current_indent = len(line) - len(line.lstrip())
+        # If we hit something at the same or lower indentation, method has ended
+        if current_indent <= base_indent:
+            method_end = i
+            break
+
+    # Find decorators before the method (lines starting with @ at the same indent level)
+    decorator_start = method_start
+    for i in range(method_start - 1, -1, -1):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Skip blank lines
+        if not stripped:
+            continue
+
+        # Check if it's a decorator at the same indent level
+        if stripped.startswith("@"):
+            line_indent = len(line) - len(line.lstrip())
+            if line_indent == base_indent:
+                decorator_start = i
+                continue
+
+        # Hit something that's not a decorator or blank line - stop
+        break
+
+    # Remove the method including decorators (and any blank lines before decorators)
+    remove_start = decorator_start
+    while remove_start > 0 and lines[remove_start - 1].strip() == "":
+        remove_start -= 1
+
+    new_lines = lines[:remove_start] + lines[method_end:]
+    return (True, "\n".join(new_lines), "")
+
+
+def remove_test(
+    test_file_path: Path,
+    test_class: str,
+    method_name: str,
+) -> tuple[bool, str]:
+    """
+    Remove a test method from a test file.
+
+    Args:
+        test_file_path: Path to the test file
+        test_class: Name of the test class containing the method
+        method_name: Name of the method to remove
+
+    Returns:
+        (success, message)
+    """
+    if not test_file_path.exists():
+        return (False, f"Test file not found: {test_file_path}")
+
+    try:
+        content = test_file_path.read_text()
+    except Exception as e:
+        return (False, f"Error reading test file: {e}")
+
+    success, new_content, error = remove_test_method(content, test_class, method_name)
+
+    if not success:
+        return (False, error)
+
+    try:
+        test_file_path.write_text(new_content)
+        return (True, f"Successfully removed test {method_name} from {test_file_path}")
+    except Exception as e:
+        return (False, f"Error writing test file: {e}")
+
+
+def get_imports_from_code(code: str) -> set[str]:
+    """Extract import statements from code."""
+    import re
+    imports = set()
+    for line in code.split('\n'):
+        line = line.strip()
+        if line.startswith('import ') or line.startswith('from '):
+            imports.add(line)
+    return imports
+
+
+def apply_test(
+    test_file_path: Path,
+    test_class: str,
+    test_method_code: str,
+    dry_run: bool = False,
+    replace: bool = False,
+    method_name: str = None,
+) -> tuple[bool, str]:
+    """
+    Apply a generated test to a test file.
+
+    Note: Currently, test_method_code should only contain the method definition,
+    not any import statements. All necessary imports should already exist at the
+    top of the test file. If new imports are needed in the future, we'll need
+    to add import tracking and rollback logic.
+
+    Args:
+        test_file_path: Path to the test file
+        test_class: Name of the test class to add the method to
+        test_method_code: The generated test method code
+        dry_run: If True, don't actually write the file
+        replace: If True, replace existing method with same name
+        method_name: Required if replace=True, name of method to replace
+
+    Returns:
+        (success, message)
+    """
+    if not test_file_path.exists():
+        return (False, f"Test file not found: {test_file_path}")
+
+    try:
+        content = test_file_path.read_text()
+    except Exception as e:
+        return (False, f"Error reading test file: {e}")
+
+    # Check if test_method_code contains any imports (it shouldn't)
+    test_imports = get_imports_from_code(test_method_code)
+    if test_imports:
+        return (False, f"Test method should not contain imports. Found: {test_imports}. "
+                       f"All imports should be at the top of the test file.")
+
+    # If replacing, remove the old method first
+    if replace:
+        if not method_name:
+            return (False, "method_name required when replace=True")
+
+        success, content, error = remove_test_method(content, test_class, method_name)
+        if not success:
+            # Method might not exist yet, which is fine
+            pass
+
+    success, new_content, error = insert_test_method(content, test_class, test_method_code)
+
+    if not success:
+        return (False, error)
+
+    if dry_run:
+        action = "replace" if replace else "add"
+        return (True, f"[DRY RUN] Would {action} test in {test_file_path}")
+
+    try:
+        test_file_path.write_text(new_content)
+        action = "replaced" if replace else "added"
+        return (True, f"Successfully {action} test in {test_file_path}")
+    except Exception as e:
+        return (False, f"Error writing test file: {e}")
+
+
+if __name__ == "__main__":
+    # Example usage
+    example_content = """import unittest
+
+class TestGetLabel(unittest.TestCase):
+    def setUp(self):
+        self.labels = ["neither", "checo", "tuni"]
+
+    def test_valid_index(self):
+        self.assertEqual(get_label(self.labels, 0), "neither")
+
+class TestOther(unittest.TestCase):
+    def test_something(self):
+        pass
+"""
+
+    example_test = """    def test_index_equal_to_length(self):
+        \"\"\"Test that index equal to length returns 'unknown'.\"\"\"
+        idx = len(self.labels)
+        self.assertEqual(get_label(self.labels, idx), "unknown")"""
+
+    success, new_content, error = insert_test_method(
+        example_content, "TestGetLabel", example_test
+    )
+
+    if success:
+        print("Success!")
+        print(new_content)
+    else:
+        print(f"Error: {error}")

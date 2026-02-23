@@ -1,3 +1,4 @@
+import os
 import sys
 import unittest
 from unittest.mock import MagicMock, patch, PropertyMock
@@ -49,6 +50,10 @@ class TestGetLabel(unittest.TestCase):
     def test_negative_index(self):
         self.assertEqual(get_label(self.labels, -1), "unknown")
 
+    def test_index_equal_to_length_of_labels(self):
+        """Test that get_label returns 'unknown' when index is equal to the length of labels."""
+        self.assertEqual(get_label(self.labels, len(self.labels)), 'unknown')
+
 
 class TestIsImageTooDark(unittest.TestCase):
     def test_dark_image(self):
@@ -68,6 +73,26 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.side_effect = RuntimeError("camera error")
         # Should return False (not dark) on error
         self.assertFalse(is_image_too_dark(request))
+
+    def test_image_at_darkness_threshold(self):
+        """Test that an image with average brightness equal to the darkness threshold is not considered too dark."""
+        request = MagicMock()
+        # Create an image with mean brightness equal to the threshold (30)
+        request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
+        self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
+
+    def test_image_just_below_threshold(self):
+        """Test that an image with average brightness just below the threshold is considered too dark.
+
+        This uses a constant image with mean brightness 25 and darkness_threshold=30.
+        The original implementation returns True for mean < threshold. A mutant that adds +10
+        to the mean would compute 35 and therefore return False, so this test will kill that mutant.
+        """
+        request = MagicMock()
+        # Create an image with mean brightness = 25 (just below threshold 30)
+        request.make_array.return_value = np.full((100, 100, 3), 25, dtype=np.uint8)
+        self.assertTrue(is_image_too_dark(request, darkness_threshold=30))
+
 
 
 class TestParseClassificationResults(unittest.TestCase):
@@ -108,6 +133,36 @@ class TestParseClassificationResults(unittest.TestCase):
         results = parse_classification_results(imx500, request, intrinsics, last)
         self.assertEqual(results, last)
 
+    def test_get_outputs_called_with_request_metadata(self):
+        imx500 = MagicMock()
+        request = MagicMock()
+        meta = object()
+        request.get_metadata.return_value = meta
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+        imx500.get_outputs.return_value = [np.array([[0.1, 0.9, 0.0]])]
+
+        results = parse_classification_results(imx500, request, intrinsics, [])
+        imx500.get_outputs.assert_called_once_with(meta)
+        self.assertEqual(results[0].idx, 1)
+        self.assertAlmostEqual(results[0].score, 0.9)
+
+    def test_more_than_three_classes_limits_to_three(self):
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+        imx500.get_outputs.return_value = [np.array([[0.1, 0.9, 0.2, 0.8, 0.05]])]
+
+        results = parse_classification_results(imx500, request, intrinsics, [])
+        self.assertEqual(len(results), 3)
+        self.assertEqual(results[0].idx, 1)
+        self.assertAlmostEqual(results[0].score, 0.9)
+        self.assertEqual(results[1].idx, 3)
+        self.assertAlmostEqual(results[1].score, 0.8)
+        self.assertEqual(results[2].idx, 2)
+        self.assertAlmostEqual(results[2].score, 0.2)
+
     def test_with_softmax_enabled(self):
         imx500 = MagicMock()
         request = MagicMock()
@@ -123,6 +178,16 @@ class TestParseClassificationResults(unittest.TestCase):
         self.assertEqual(results[0].idx, 1)
         self.assertAlmostEqual(results[0].score, 0.8)
 
+    def test_parse_classification_results_returns_last_detections_when_np_outputs_is_none(self):
+        """Test that parse_classification_results returns last_detections when imx500.get_outputs returns None."""
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+        last_detections = [Classification(1, 0.9), Classification(2, 0.8)]
+        imx500.get_outputs.return_value = None
+
+        results = parse_classification_results(imx500, request, intrinsics, last_detections)
+        self.assertEqual(results, last_detections)
 
 class TestAddToDataDynamodb(unittest.TestCase):
     def test_correct_item_structure(self):
@@ -154,6 +219,20 @@ class TestAddToUrlDynamodb(unittest.TestCase):
         self.assertGreater(len(item['URL']), 36)
 
 
+    @patch('cat_finder.uuid')
+    @patch('cat_finder.datetime')
+    def test_add_to_url_includes_timestamp(self, mock_datetime, mock_uuid):
+        mock_datetime.now.return_value.strftime.return_value = '2020-01-02_03-04-05'
+        mock_uuid.uuid4.return_value = 'fixed-uuid'
+        mock_table = MagicMock()
+        s3_url = 's3://bucket/object'
+
+        add_to_url_dynamodb(mock_table, s3_url)
+
+        mock_table.put_item.assert_called_once()
+        item = mock_table.put_item.call_args[1]['Item']
+        expected = '2020-01-02_03-04-05_fixed-uuid'
+        self.assertTrue(any(expected in str(v) for v in item.values()))
 class TestUploadToS3(unittest.TestCase):
     def test_success(self):
         client = MagicMock()
@@ -288,8 +367,6 @@ class TestProcessDetection(unittest.TestCase):
         self.assertEqual(result, "checo")
         # Image should NOT be deleted when upload fails
         mock_remove.assert_not_called()
-
-
 class TestButtonPressed(unittest.TestCase):
     def test_sets_flag_on_falling_edge(self):
         flag = [False]
@@ -308,8 +385,6 @@ class TestButtonPressed(unittest.TestCase):
         lock = MagicMock()
         button_pressed(flag, lock, gpio=17, level=0, tick=0)
         lock.__enter__.assert_called()
-
-
 class TestProcessDetectionNeitherLabel(unittest.TestCase):
     def setUp(self):
         self.request = MagicMock()
@@ -373,11 +448,19 @@ class TestProcessDetectionNeitherLabel(unittest.TestCase):
 
 
 class TestMainEnvValidation(unittest.TestCase):
+    def _env_with_mutmut(self, env_dict):
+        """Preserve MUTANT_UNDER_TEST if set (needed for mutation testing)."""
+        mutant = os.environ.get('MUTANT_UNDER_TEST')
+        if mutant is not None:
+            env_dict['MUTANT_UNDER_TEST'] = mutant
+        return env_dict
+
     @patch('cat_finder.load_dotenv')
-    def test_missing_env_vars_exits(self, mock_dotenv):
+    @patch('cat_finder.boto3')
+    def test_missing_env_vars_exits(self, mock_boto3, mock_dotenv):
         """main() should sys.exit when required env vars are missing."""
         from cat_finder import main
-        with patch.dict('os.environ', {}, clear=True):
+        with patch.dict('os.environ', self._env_with_mutmut({}), clear=True):
             with self.assertRaises(SystemExit) as ctx:
                 main()
             error_msg = str(ctx.exception)
@@ -385,14 +468,15 @@ class TestMainEnvValidation(unittest.TestCase):
                 self.assertIn(var, error_msg)
 
     @patch('cat_finder.load_dotenv')
-    def test_partial_env_vars_exits(self, mock_dotenv):
+    @patch('cat_finder.boto3')
+    def test_partial_env_vars_exits(self, mock_boto3, mock_dotenv):
         """main() should exit listing only the missing vars."""
         from cat_finder import main
-        partial_env = {
+        partial_env = self._env_with_mutmut({
             'AWS_ACCESS_KEY_ID': 'key',
             'AWS_SECRET_ACCESS_KEY': 'secret',
             'AWS_REGION': 'us-east-1',
-        }
+        })
         with patch.dict('os.environ', partial_env, clear=True):
             with self.assertRaises(SystemExit) as ctx:
                 main()
