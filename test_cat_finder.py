@@ -81,6 +81,19 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
         self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
 
+    def test_image_just_below_threshold(self):
+        """Test that an image with average brightness just below the threshold is considered too dark.
+
+        This uses a constant image with mean brightness 25 and darkness_threshold=30.
+        The original implementation returns True for mean < threshold. A mutant that adds +10
+        to the mean would compute 35 and therefore return False, so this test will kill that mutant.
+        """
+        request = MagicMock()
+        # Create an image with mean brightness = 25 (just below threshold 30)
+        request.make_array.return_value = np.full((100, 100, 3), 25, dtype=np.uint8)
+        self.assertTrue(is_image_too_dark(request, darkness_threshold=30))
+
+
 
 class TestParseClassificationResults(unittest.TestCase):
     def test_valid_output(self):
