@@ -1,0 +1,22 @@
+# Core dependencies for agentic_testing module
+mutmut>=2.0.0
+pytest>=7.0.0
+
+# Python standard library (no install needed):
+# - json
+# - os
+# - re
+# - subprocess
+# - pathlib
+# - urllib.request
+# - sys
+# - argparse
+
+# Environment variables required:
+# - OPENAI_API_KEY: API key for OpenAI (or compatible LLM service)
+
+# Optional (for running with the test suite):
+# - unittest.mock (standard library)
+# - numpy (if your code uses it)
+# - boto3 (if your code uses AWS)
+# - Any other project-specific dependencies

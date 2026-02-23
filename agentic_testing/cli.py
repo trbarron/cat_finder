@@ -23,10 +23,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Add parent directory to path so we can import from mutation_testing
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
-from mutation_testing.analyze_survived_mutants import (
+from .triage import (
     parse_survived_mutants,
     mangled_name_from_mutant_id,
     run_mutmut_show,
@@ -37,7 +34,7 @@ from mutation_testing.analyze_survived_mutants import (
     build_llm_prompt,
     fetch_llm_analysis,
 )
-from agentic_testing.agent_loop import run_agent_loop
+from .agent_loop import run_agent_loop
 
 
 def run_mutmut(package_dir: Path) -> bool:
@@ -45,8 +42,8 @@ def run_mutmut(package_dir: Path) -> bool:
     print("Step 1: Running mutmut to generate mutations...")
     print("=" * 80)
 
-    # Use the custom run_mutmut.py wrapper
-    mutmut_wrapper = package_dir / "mutation_testing" / "run_mutmut.py"
+    # Use the custom run_mutmut.py wrapper (from agentic_testing folder)
+    mutmut_wrapper = Path(__file__).parent / "run_mutmut.py"
 
     cmd = [
         sys.executable,
@@ -65,7 +62,9 @@ def run_mutmut(package_dir: Path) -> bool:
 
         # Generate results file
         results_cmd = [sys.executable, str(mutmut_wrapper), "results"]
-        results_output = package_dir / "mutation_testing" / "mutmut_results.txt"
+        cache_dir = package_dir / ".agentic_testing_cache"
+        cache_dir.mkdir(exist_ok=True)
+        results_output = cache_dir / "mutmut_results.txt"
 
         with open(results_output, "w") as f:
             result = subprocess.run(
@@ -92,7 +91,9 @@ def triage_mutants(
     print("\n\nStep 2: Triaging survived mutants with LLM...")
     print("=" * 80)
 
-    results_path = package_dir / "mutation_testing" / "mutmut_results.txt"
+    cache_dir = package_dir / ".agentic_testing_cache"
+    cache_dir.mkdir(exist_ok=True)
+    results_path = cache_dir / "mutmut_results.txt"
     stats_path = package_dir / "mutants" / "mutmut-stats.json"
 
     survived = parse_survived_mutants(results_path)
@@ -296,7 +297,9 @@ def main() -> int:
 
     # Step 2: Triage mutants (unless skipped)
     triage_results = []
-    triage_cache_path = package_dir / "mutation_testing" / "triage.json"
+    cache_dir = package_dir / ".agentic_testing_cache"
+    cache_dir.mkdir(exist_ok=True)
+    triage_cache_path = cache_dir / "triage.json"
 
     if args.skip_triage and triage_cache_path.exists():
         print(f"Loading triage results from {triage_cache_path}")
