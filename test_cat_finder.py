@@ -229,6 +229,22 @@ class TestAddToUrlDynamodb(unittest.TestCase):
         expected = '2020-01-02_03-04-05_fixed-uuid'
         self.assertTrue(any(expected in str(v) for v in item.values()))
 
+    def test_timestamp_format_in_url(self):
+        """Verify that the timestamp format in the URL field matches %Y-%m-%d_%H-%M-%S."""
+        import re
+        mock_table = MagicMock()
+        expected_timestamp = '2020-01-02_03-04-05'
+        expected_uuid = 'fixed-uuid'
+        with patch('cat_finder.uuid') as mock_uuid:
+            with patch('cat_finder.datetime') as mock_datetime:
+                mock_datetime.now.return_value.strftime.return_value = expected_timestamp
+                mock_uuid.uuid4.return_value = expected_uuid
+                add_to_url_dynamodb(mock_table, 's3://bucket/object')
+                item = mock_table.put_item.call_args[1]['Item']
+                url = item['URL']
+                pattern = r'\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_\w{8}-\w{4}-\w{4}-\w{4}-\w{12}'
+                self.assertRegex(url, pattern)
+
 
 class TestUploadToS3(unittest.TestCase):
     def test_success(self):

@@ -9,7 +9,7 @@ import urllib.request
 from pathlib import Path
 
 
-LLM_MODEL = "gpt-5-mini"
+LLM_MODEL = "gpt-4o-mini"  # Using GPT-4o mini for cost-effectiveness
 LLM_TEMPERATURE = 0.2  # Lower temperature for more deterministic code generation
 LLM_API_URL = "https://api.openai.com/v1/chat/completions"
 
@@ -19,6 +19,7 @@ def generate_test_code(
     test_file_path: Path,
     existing_test_content: str,
     api_key: str,
+    source_snippet: str = "",
 ) -> dict:
     """
     Generate test code using LLM based on the agent_prompt from triage.
@@ -64,11 +65,20 @@ Requirements:
 - DO NOT include class definition or imports (just the method)
 """
 
+    source_context = ""
+    if source_snippet:
+        source_context = f"""
+**Source code being tested (for reference):**
+```python
+{source_snippet}
+```
+"""
+
     user_prompt = f"""**Agent prompt (what to test):**
 {agent_prompt}
 
 **Test file to modify:** {test_file_path}
-
+{source_context}
 **Existing test file content:**
 ```python
 {existing_test_content}

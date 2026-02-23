@@ -96,15 +96,24 @@ def process_mutant(
     print(f"\n1. Generating test code...")
     print(f"   Agent prompt: {agent_prompt[:100]}...")
 
+    # Get source snippet for better context
+    source_snippet = mutant_entry.get("source_snippet", "")
+    diff = mutant_entry.get("diff", "")
+
+    # Combine diff and source snippet for full context
+    full_source_context = f"{diff}\n\n{source_snippet}" if diff and source_snippet else (source_snippet or diff or "")
+
     test_result = generate_test_code(
-        agent_prompt, test_file_path, existing_test_content, api_key
+        agent_prompt, test_file_path, existing_test_content, api_key, full_source_context
     )
 
     if not test_result.get("success"):
+        error_msg = test_result.get('error', 'Unknown error')
+        print(f"\n   ERROR: Test generation failed: {error_msg}")
         return {
             "mutant_id": mutant_id,
             "status": "error",
-            "reason": f"Test generation failed: {test_result.get('error')}",
+            "reason": f"Test generation failed: {error_msg}",
         }
 
     test_class = test_result["test_class"]
