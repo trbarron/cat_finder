@@ -190,6 +190,17 @@ def remove_test(
         return (False, f"Error writing test file: {e}")
 
 
+def get_imports_from_code(code: str) -> set[str]:
+    """Extract import statements from code."""
+    import re
+    imports = set()
+    for line in code.split('\n'):
+        line = line.strip()
+        if line.startswith('import ') or line.startswith('from '):
+            imports.add(line)
+    return imports
+
+
 def apply_test(
     test_file_path: Path,
     test_class: str,
@@ -200,6 +211,11 @@ def apply_test(
 ) -> tuple[bool, str]:
     """
     Apply a generated test to a test file.
+
+    Note: Currently, test_method_code should only contain the method definition,
+    not any import statements. All necessary imports should already exist at the
+    top of the test file. If new imports are needed in the future, we'll need
+    to add import tracking and rollback logic.
 
     Args:
         test_file_path: Path to the test file
@@ -219,6 +235,12 @@ def apply_test(
         content = test_file_path.read_text()
     except Exception as e:
         return (False, f"Error reading test file: {e}")
+
+    # Check if test_method_code contains any imports (it shouldn't)
+    test_imports = get_imports_from_code(test_method_code)
+    if test_imports:
+        return (False, f"Test method should not contain imports. Found: {test_imports}. "
+                       f"All imports should be at the top of the test file.")
 
     # If replacing, remove the old method first
     if replace:

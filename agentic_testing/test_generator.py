@@ -77,7 +77,10 @@ Requirements:
 - Use appropriate assertions from unittest (assertEqual, assertTrue, assertFalse, etc.)
 - Follow the style of existing tests
 - Make the test as minimal as possible - only test the specific mutation
-- DO NOT include class definition or imports (just the method)
+- **DO NOT include:**
+  - Class definitions
+  - Import statements (all imports are already at the top of the test file)
+  - Only the method definition with decorators (if needed)
 - **ALWAYS assert the ORIGINAL code's behavior, not the mutant's behavior**
 - **ALWAYS use an EXISTING test class from the test file - NEVER create a new class**
 - If the agent_prompt suggests a new class, choose the most appropriate existing class instead

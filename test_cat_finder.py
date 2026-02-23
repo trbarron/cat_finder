@@ -77,13 +77,6 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
         self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
 
-    def test_image_at_darkness_threshold_kills_mutant(self):
-        """Test that an image with average brightness equal to the darkness threshold returns False."""
-        request = MagicMock()
-        # Create an image with mean brightness equal to the threshold (30)
-        request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
-        self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
-
 
 class TestParseClassificationResults(unittest.TestCase):
     def test_valid_output(self):
@@ -179,15 +172,6 @@ class TestParseClassificationResults(unittest.TestCase):
         results = parse_classification_results(imx500, request, intrinsics, last_detections)
         self.assertEqual(results, last_detections)
 
-    @patch('cat_finder.add_to_data_dynamodb')
-
-    @patch('cat_finder.add_to_data_dynamodb')
-
-    @patch('cat_finder.add_to_data_dynamodb')
-
-    @patch('cat_finder.add_to_data_dynamodb')
-
-    @patch('cat_finder.add_to_data_dynamodb')
 class TestAddToDataDynamodb(unittest.TestCase):
     def test_correct_item_structure(self):
         table = MagicMock()
@@ -388,13 +372,7 @@ class TestButtonPressed(unittest.TestCase):
         button_pressed(flag, lock, gpio=17, level=0, tick=0)
         lock.__enter__.assert_called()
 
-    import threading
 
-    import threading
-
-    import threading
-
-    import threading
 class TestProcessDetectionNeitherLabel(unittest.TestCase):
     def setUp(self):
         self.request = MagicMock()

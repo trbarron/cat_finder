@@ -470,6 +470,29 @@ def run_agent_loop(
         mutant_id = mutant_entry.get("mutant_id", "unknown")
         logger.log_mutant_start(mutant_id, i + 1, len(triage_results))
 
+        # Check if this mutant is already killed by existing tests
+        print(f"→ Checking if mutant is already killed by existing tests...")
+        mutant_file_path = mutant_entry.get("mutant_file") if mutation_engine == "mutahunter" else None
+
+        if mutation_engine == "mutahunter" and mutant_file_path:
+            from .verifier import _verify_mutahunter_mutant
+            test_file_path = package_dir / "test_cat_finder.py"
+
+            # Run existing tests against this mutant
+            already_killed, msg = _verify_mutahunter_mutant(
+                mutant_id, mutant_file_path, test_file_path, package_dir
+            )
+
+            if already_killed:
+                print(f"✓ Mutant already killed by existing tests - skipping")
+                results.append({
+                    "mutant_id": mutant_id,
+                    "status": "already_killed",
+                    "reason": "Mutant already killed by existing tests",
+                })
+                logger.log_result(mutant_id, "already_killed", "Killed by previous test")
+                continue
+
         result = process_mutant(
             mutant_entry,
             package_dir,
