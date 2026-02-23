@@ -43,6 +43,21 @@ def fix_failed_test(
     """
     system_prompt = """You are an expert Python test engineer specializing in fixing broken tests.
 
+**CRITICAL: What "killing a mutant" means:**
+A test "kills" a mutant if it:
+1. PASSES when run against the ORIGINAL (correct) code
+2. FAILS when run against the MUTATED (incorrect) code
+
+Your test should assert the CORRECT behavior (what the original code does), NOT what the mutant does.
+
+**Example:**
+- Original code: `return x < 10`
+- Mutant code: `return x <= 10`
+- To kill this mutant, test with x=10:
+  - Assert False (because 10 < 10 is False in original)
+  - This passes with original (10 < 10 = False ✓)
+  - This fails with mutant (10 <= 10 = True ✗) → MUTANT KILLED
+
 Your job is to analyze a failed test and fix it based on the error message.
 
 Common issues to fix:

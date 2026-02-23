@@ -160,12 +160,21 @@ Only recommend a test if the mutation changes a **return value, a stored value (
 
 **Task:** Should we write or strengthen a test for this mutation?
 
-Respond in JSON only, no markdown. If should_write_test is true, include an "agent_prompt" field with a detailed prompt that a coding agent can use to write the test. The agent prompt should reference specific file paths, the function under test, what assertion to add, and which test file to modify.
+Respond in JSON only, no markdown. If should_write_test is true, include an "agent_prompt" field with a detailed prompt that a coding agent can use to write the test. The agent prompt MUST specify:
+1. Which test file and EXISTING test class (never suggest creating a new class)
+2. What inputs to use
+3. What to assert (the ORIGINAL code's behavior, not the mutant's)
+4. Why this kills the mutant
 
 {{"should_write_test": true or false, "reason": "one or two sentences", "suggestion": "one-line hint if should_write_test is true, otherwise empty string", "agent_prompt": "detailed agent-ready prompt if should_write_test is true, otherwise empty string"}}
 
-Example agent_prompt (only when should_write_test is true):
-"In test_cat_finder.py, add a test to TestGetLabel that calls get_label with idx=3 (exactly len(labels)) and asserts the return value is 'unknown'. This kills the mutant that changes >= to > in the bounds check. The source function is get_label in cat_finder.py."
+Example agent_prompts (only when should_write_test is true):
+
+Example 1 (bounds check):
+"In test_cat_finder.py, add a test to TestGetLabel that calls get_label with idx=3 (exactly len(labels)) and asserts the return value is 'unknown'. This tests the correct behavior of the original code (idx >= len returns 'unknown'). The mutant changed >= to >, so it would incorrectly return labels[3] and crash. The source function is get_label in cat_finder.py."
+
+Example 2 (comparison operator):
+"In test_cat_finder.py, add a test to TestIsImageTooDark that creates an image with average brightness equal to the threshold (e.g., 30) and asserts that is_image_too_dark returns False. This tests the correct behavior of the original code (brightness < threshold). The mutant changed < to <=, so it would incorrectly return True, killing the mutant."
 """
 
 

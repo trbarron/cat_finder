@@ -13,6 +13,7 @@ Inspired by Meta's ACH (Automated Compliance Hardening):
 
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,123 @@ from .test_applier import apply_test
 from .verifier import verify_test_kills_mutant
 from .test_fixer import fix_failed_test
 from .error_extractor import extract_pytest_error
+import subprocess
+import sys
+
+
+def check_tests_pass(package_dir: Path, test_file: str = "test_cat_finder.py") -> tuple[bool, str]:
+    """
+    Run pytest to verify all tests pass.
+
+    Returns:
+        (all_passed, output)
+    """
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", test_file, "-v", "--tb=short"],
+            cwd=package_dir,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+        all_passed = result.returncode == 0
+        output = f"{result.stdout}\n{result.stderr}"
+
+        return (all_passed, output)
+
+    except subprocess.TimeoutExpired:
+        return (False, "Timeout running tests (>120s)")
+    except Exception as e:
+        return (False, f"Error running tests: {e}")
+
+
+class AgentLogger:
+    """Logger for agentic testing loop that saves all generated tests and results."""
+
+    def __init__(self, log_dir: Path):
+        self.log_dir = log_dir
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create timestamped log file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.log_file = self.log_dir / f"agentic_loop_{timestamp}.log"
+        self.generated_tests_file = self.log_dir / f"generated_tests_{timestamp}.py"
+
+        # Initialize files
+        self._write_header()
+
+    def _write_header(self):
+        """Write header to log file."""
+        with open(self.log_file, "w") as f:
+            f.write("=" * 80 + "\n")
+            f.write("AGENTIC TESTING LOOP LOG\n")
+            f.write(f"Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write("=" * 80 + "\n\n")
+
+        with open(self.generated_tests_file, "w") as f:
+            f.write("# Generated tests from agentic testing loop\n")
+            f.write(f"# Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+    def log(self, message: str):
+        """Write message to log file."""
+        with open(self.log_file, "a") as f:
+            f.write(message + "\n")
+
+    def log_mutant_start(self, mutant_id: str, index: int, total: int):
+        """Log start of processing a mutant."""
+        msg = f"\n{'='*80}\n[{index}/{total}] Processing Mutant: {mutant_id}\n{'='*80}\n"
+        self.log(msg)
+        print(msg)
+
+    def log_test_generated(
+        self, mutant_id: str, test_class: str, test_method: str, test_code: str, explanation: str
+    ):
+        """Log a generated test."""
+        msg = f"""
+Test Generated:
+  Mutant ID: {mutant_id}
+  Class: {test_class}
+  Method: {test_method}
+  Explanation: {explanation}
+
+Code:
+{test_code}
+"""
+        self.log(msg)
+
+        # Also save to generated_tests file
+        with open(self.generated_tests_file, "a") as f:
+            f.write(f"\n# Mutant: {mutant_id}\n")
+            f.write(f"# Explanation: {explanation}\n")
+            f.write(test_code + "\n\n")
+
+    def log_result(self, mutant_id: str, status: str, details: str = ""):
+        """Log the result of processing a mutant."""
+        msg = f"""
+Result for {mutant_id}:
+  Status: {status}
+  Details: {details}
+"""
+        self.log(msg)
+
+    def log_summary(self, summary: dict):
+        """Log final summary."""
+        msg = f"""
+{'='*80}
+FINAL SUMMARY
+{'='*80}
+Total processed: {summary['total']}
+  Success:  {summary['success']}
+  Errors:   {summary['error']}
+  Skipped:  {summary['skipped']}
+  Rejected: {summary['rejected']}
+"""
+        self.log(msg)
+
+        print(f"\nLog files written to:")
+        print(f"  Full log: {self.log_file}")
+        print(f"  Generated tests: {self.generated_tests_file}")
 
 
 def load_triage_results(report_path: Path) -> list[dict[str, Any]]:
@@ -45,7 +163,9 @@ def process_mutant(
     api_key: str,
     interactive: bool = True,
     dry_run: bool = False,
-    max_iterations: int = 3,
+    max_iterations: int = 5,
+    logger: AgentLogger = None,
+    mutation_engine: str = "mutmut",
 ) -> dict[str, Any]:
     """
     Process a single mutant: generate test, apply, verify.
@@ -62,6 +182,8 @@ def process_mutant(
     """
     mutant_id = mutant_entry.get("mutant_id", "unknown")
     agent_prompt = mutant_entry.get("llm_analysis", {}).get("agent_prompt", "")
+    source_file = mutant_entry.get("source_file", "")
+    line_no = mutant_entry.get("line_no")
 
     if not agent_prompt:
         return {
@@ -107,6 +229,7 @@ def process_mutant(
     test_method_name = None
     test_code = None
     explanation = None
+    error_message = ""  # Initialize to avoid UnboundLocalError
 
     for iteration in range(1, max_iterations + 1):
         iteration_suffix = f" (attempt {iteration}/{max_iterations})" if iteration > 1 else ""
@@ -157,6 +280,10 @@ def process_mutant(
         print(f"\n   Code:")
         print("   " + "\n   ".join(test_code.split("\n")))
 
+        # Log generated test
+        if logger and iteration == 1:
+            logger.log_test_generated(mutant_id, test_class, test_method_name, test_code, explanation)
+
         # Step 2: Interactive approval (only on first iteration or if user wants to approve fixes)
         if interactive and not dry_run and iteration == 1:
             print(f"\n3. Approve this test? [y/n/skip/quit]: ", end="")
@@ -184,13 +311,15 @@ def process_mutant(
         )
 
         if not apply_success:
+            error_message = apply_msg  # Save for next iteration
+            print(f"   ERROR: {apply_msg}")
+
             if iteration == max_iterations:
                 return {
                     "mutant_id": mutant_id,
                     "status": "error",
                     "reason": f"Failed to apply test after {max_iterations} attempts: {apply_msg}",
                 }
-            print(f"   ERROR: {apply_msg}")
             continue
 
         print(f"   {apply_msg}")
@@ -199,8 +328,16 @@ def process_mutant(
         if not dry_run:
             step_num += 1
             print(f"\n{step_num}. Verifying test{iteration_suffix}...")
+
+            # Get mutant file path for mutahunter
+            mutant_file_path = mutant_entry.get("mutant_file") if mutation_engine == "mutahunter" else None
+
             verify_success, verify_msg = verify_test_kills_mutant(
-                mutant_id, test_file_path, package_dir
+                mutant_id,
+                test_file_path,
+                package_dir,
+                mutation_engine=mutation_engine,
+                mutant_file_path=mutant_file_path,
             )
 
             if verify_success:
@@ -214,19 +351,41 @@ def process_mutant(
                     "iterations": iteration,
                 }
             else:
-                print(f"   ✗ Test failed")
+                print(f"   ✗ Verification failed")
                 # Extract error for next iteration
                 error_info = extract_pytest_error(verify_msg)
                 error_message = error_info.get("error_message", verify_msg)
-                print(f"   Error: {error_message[:200]}...")
+
+                # Show concise error
+                if "FAILED against original" in verify_msg:
+                    print(f"   Reason: Test fails with original code")
+                elif "PASSED" in verify_msg and "mutant" in verify_msg:
+                    print(f"   Reason: Mutant survived (test passes with mutant)")
+                else:
+                    print(f"   Error: {error_message[:100]}...")
 
                 if iteration == max_iterations:
+                    # Exhausted all attempts - roll back the test
+                    print(f"\n   ✗ Exhausted {max_iterations} attempts. Rolling back test...")
+
+                    from .test_applier import remove_test
+
+                    rollback_success, rollback_msg = remove_test(
+                        test_file_path, test_class, test_method_name
+                    )
+
+                    if rollback_success:
+                        print(f"   ✓ Test rolled back successfully")
+                    else:
+                        print(f"   ✗ Failed to roll back test: {rollback_msg}")
+
                     return {
                         "mutant_id": mutant_id,
                         "status": "verification_failed",
-                        "reason": f"Test failed verification after {max_iterations} attempts",
-                        "test_applied": True,
+                        "reason": f"Test failed verification after {max_iterations} attempts (rolled back)",
+                        "test_applied": False,  # Rolled back
                         "last_error": error_message,
+                        "rollback_success": rollback_success,
                     }
 
                 print(f"   → Attempting to fix the test...")
@@ -256,6 +415,7 @@ def run_agent_loop(
     interactive: bool = True,
     dry_run: bool = False,
     limit: int | None = None,
+    mutation_engine: str = "mutmut",
 ) -> dict[str, Any]:
     """
     Main agentic loop.
@@ -274,19 +434,70 @@ def run_agent_loop(
     if limit:
         triage_results = triage_results[:limit]
 
+    # Create logger
+    log_dir = package_dir / ".agentic_testing_cache" / "logs"
+    logger = AgentLogger(log_dir)
+
     print(f"\n{'='*80}")
     print(f"Agentic Testing Loop - Processing {len(triage_results)} mutant(s)")
     print(f"Mode: {'INTERACTIVE' if interactive else 'AUTO'}")
+    print(f"Logging to: {logger.log_file.name}")
     print(f"{'='*80}")
+
+    # Sanity check: verify tests pass before we start
+    print("\n→ Running sanity check: verifying all tests pass...")
+    tests_pass, test_output = check_tests_pass(package_dir)
+
+    if not tests_pass:
+        print("✗ SANITY CHECK FAILED: Tests are already broken!")
+        print("\nTest output (last 500 chars):")
+        print(test_output[-500:])
+        print("\nPlease fix the tests before running the agentic loop.")
+        return {
+            "total": 0,
+            "success": 0,
+            "error": 0,
+            "skipped": 0,
+            "rejected": 0,
+            "results": [],
+            "sanity_check_failed": True,
+        }
+
+    print("✓ Sanity check passed - all tests passing\n")
 
     results = []
     for i, mutant_entry in enumerate(triage_results):
-        print(f"\n\n[{i+1}/{len(triage_results)}]")
+        mutant_id = mutant_entry.get("mutant_id", "unknown")
+        logger.log_mutant_start(mutant_id, i + 1, len(triage_results))
 
         result = process_mutant(
-            mutant_entry, package_dir, api_key, interactive, dry_run
+            mutant_entry,
+            package_dir,
+            api_key,
+            interactive,
+            dry_run,
+            logger=logger,
+            mutation_engine=mutation_engine,
         )
         results.append(result)
+
+        # Log result
+        logger.log_result(
+            mutant_id, result["status"], result.get("reason", result.get("explanation", ""))
+        )
+
+        # Verify tests still pass after processing this mutant (especially after rollback)
+        if result["status"] in ["verification_failed", "error"]:
+            print(f"\n   → Verifying tests still pass after rollback...")
+            tests_pass, _ = check_tests_pass(package_dir)
+
+            if not tests_pass:
+                print(f"   ✗ ERROR: Tests are broken after processing {mutant_id}!")
+                print(f"   This means rollback failed or a broken test wasn't rolled back.")
+                print(f"   Stopping to prevent further damage.")
+                break
+            else:
+                print(f"   ✓ Tests still pass - rollback successful")
 
         if result["status"] == "quit":
             print("\nUser requested quit. Stopping.")
@@ -309,7 +520,7 @@ def run_agent_loop(
     print(f"  Skipped:  {skipped_count:3d}")
     print(f"  Rejected: {rejected_count:3d}")
 
-    return {
+    summary = {
         "total": len(results),
         "success": success_count,
         "error": error_count,
@@ -317,3 +528,8 @@ def run_agent_loop(
         "rejected": rejected_count,
         "results": results,
     }
+
+    # Log summary
+    logger.log_summary(summary)
+
+    return summary

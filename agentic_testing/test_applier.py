@@ -87,7 +87,7 @@ def insert_test_method(
 
 def remove_test_method(content: str, class_name: str, method_name: str) -> tuple[bool, str, str]:
     """
-    Remove a test method from a test class.
+    Remove a test method from a test class, including any decorators.
 
     Args:
         content: Full content of the test file
@@ -125,13 +125,69 @@ def remove_test_method(content: str, class_name: str, method_name: str) -> tuple
             method_end = i
             break
 
-    # Remove the method (and any blank lines before it)
-    remove_start = method_start
+    # Find decorators before the method (lines starting with @ at the same indent level)
+    decorator_start = method_start
+    for i in range(method_start - 1, -1, -1):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Skip blank lines
+        if not stripped:
+            continue
+
+        # Check if it's a decorator at the same indent level
+        if stripped.startswith("@"):
+            line_indent = len(line) - len(line.lstrip())
+            if line_indent == base_indent:
+                decorator_start = i
+                continue
+
+        # Hit something that's not a decorator or blank line - stop
+        break
+
+    # Remove the method including decorators (and any blank lines before decorators)
+    remove_start = decorator_start
     while remove_start > 0 and lines[remove_start - 1].strip() == "":
         remove_start -= 1
 
     new_lines = lines[:remove_start] + lines[method_end:]
     return (True, "\n".join(new_lines), "")
+
+
+def remove_test(
+    test_file_path: Path,
+    test_class: str,
+    method_name: str,
+) -> tuple[bool, str]:
+    """
+    Remove a test method from a test file.
+
+    Args:
+        test_file_path: Path to the test file
+        test_class: Name of the test class containing the method
+        method_name: Name of the method to remove
+
+    Returns:
+        (success, message)
+    """
+    if not test_file_path.exists():
+        return (False, f"Test file not found: {test_file_path}")
+
+    try:
+        content = test_file_path.read_text()
+    except Exception as e:
+        return (False, f"Error reading test file: {e}")
+
+    success, new_content, error = remove_test_method(content, test_class, method_name)
+
+    if not success:
+        return (False, error)
+
+    try:
+        test_file_path.write_text(new_content)
+        return (True, f"Successfully removed test {method_name} from {test_file_path}")
+    except Exception as e:
+        return (False, f"Error writing test file: {e}")
 
 
 def apply_test(

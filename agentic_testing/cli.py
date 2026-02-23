@@ -41,6 +41,7 @@ from .triage import (
     fetch_llm_analysis,
 )
 from .agent_loop import run_agent_loop
+from .mutahunter_parser import parse_mutahunter_results
 
 
 def run_mutahunter(
@@ -81,14 +82,21 @@ def run_mutahunter(
         venv_path=venv_path,
     )
 
-    if success:
-        cache_dir = package_dir / ".agentic_testing_cache"
-        cache_dir.mkdir(exist_ok=True)
-        results_output = cache_dir / "mutmut_results.txt"
-        results_output.write_text("# mutahunter results\n# TODO: parse mutahunter output\n")
-        print(f"\nResults written to {results_output}")
+    if not success:
+        return False
 
-    return success
+    # Parse mutahunter results
+    print("\nParsing mutahunter results...")
+    mutant_entries = parse_mutahunter_results(package_dir, source_file)
+
+    # Cache parsed results
+    cache_dir = package_dir / ".agentic_testing_cache"
+    cache_dir.mkdir(exist_ok=True)
+    results_cache = cache_dir / "mutahunter_parsed.json"
+    results_cache.write_text(json.dumps(mutant_entries, indent=2))
+    print(f"Parsed results cached to {results_cache}")
+
+    return True
 
 
 def run_mutmut(package_dir: Path, source_file: str = "cat_finder.py") -> bool:
@@ -144,8 +152,75 @@ def run_mutmut(package_dir: Path, source_file: str = "cat_finder.py") -> bool:
 
 
 
+def triage_mutahunter_entries(
+    mutant_entries: list[dict], package_dir: Path, api_key: str
+) -> list[dict]:
+    """Triage mutahunter mutant entries with LLM."""
+    triaged_mutants = []
+
+    for i, entry in enumerate(mutant_entries):
+        mutant_id = entry.get("mutant_id", "unknown")
+        print(f"\n  [{i+1}/{len(mutant_entries)}] Triaging {mutant_id}...")
+
+        # Get source snippet
+        source_file = entry.get("source_file")
+        line_no = entry.get("line_no")
+        source_snippet = ""
+
+        if source_file and line_no:
+            source_path = package_dir / source_file
+            if source_path.exists():
+                source_snippet = get_source_snippet(source_path, line_no)
+
+        # Read test files (use default for now)
+        test_files_content = read_test_file_contents(
+            package_dir, ["test_cat_finder.py"]
+        )
+
+        # Truncate long test files
+        test_content_str = ""
+        for path, content in test_files_content.items():
+            lines = content.splitlines()
+            if len(lines) > 120:
+                content = "\n".join(lines[:120]) + "\n... (truncated)"
+            test_content_str += f"--- {path} ---\n{content}\n\n"
+
+        # Build triage entry
+        triage_entry = {
+            "mutant_id": mutant_id,
+            "mangled_name": entry.get("mangled_name", ""),
+            "diff": entry.get("diff", ""),
+            "source_file": source_file,
+            "source_snippet": source_snippet,
+            "tests_that_run": ["test_cat_finder.py"],
+            "test_files_content": test_content_str.strip(),
+            "mutant_file": entry.get("mutant_file", ""),  # IMPORTANT: for verification
+            "line_no": entry.get("line_no"),
+        }
+
+        # Build prompt and call LLM
+        prompt = build_llm_prompt(triage_entry)
+        analysis = fetch_llm_analysis(prompt, api_key)
+        triage_entry["llm_analysis"] = analysis
+
+        should_write = analysis.get("should_write_test", False)
+        reason = analysis.get("reason", "")
+
+        print(f"    should_write_test: {should_write}")
+        print(f"    reason: {reason}")
+
+        if should_write:
+            triaged_mutants.append(triage_entry)
+
+    print(f"\n{len(triaged_mutants)} mutant(s) need tests (after triage)")
+    return triaged_mutants
+
+
 def triage_mutants(
-    package_dir: Path, api_key: str, limit: int | None = None
+    package_dir: Path,
+    api_key: str,
+    limit: int | None = None,
+    mutation_engine: str = "mutmut",
 ) -> list[dict]:
     """
     Run triage on survived mutants using LLM.
@@ -155,24 +230,43 @@ def triage_mutants(
     print("\n" + "=" * 80)
     print("STEP 2: LLM TRIAGE")
     print("=" * 80)
-    print("Filtering out cosmetic mutations (print statements, logging, etc.)")
-    print("=" * 80)
 
     cache_dir = package_dir / ".agentic_testing_cache"
     cache_dir.mkdir(exist_ok=True)
-    results_path = cache_dir / "mutmut_results.txt"
-    stats_path = package_dir / "mutants" / "mutmut-stats.json"
 
-    survived = parse_survived_mutants(results_path)
-    if not survived:
-        print("No survived mutants found.")
-        return []
+    # Load mutants based on engine
+    if mutation_engine == "mutahunter":
+        # Load parsed mutahunter results
+        mutahunter_cache = cache_dir / "mutahunter_parsed.json"
+        if not mutahunter_cache.exists():
+            print("Error: No mutahunter results found. Run with --skip-mutmut=false first.")
+            return []
 
-    print(f"Found {len(survived)} survived mutant(s)")
+        mutant_entries = json.loads(mutahunter_cache.read_text())
+        print(f"Found {len(mutant_entries)} survived mutant(s) from mutahunter")
 
-    if limit:
-        survived = survived[:limit]
-        print(f"Limited to first {limit} mutant(s)")
+        if limit:
+            mutant_entries = mutant_entries[:limit]
+            print(f"Limited to first {limit} mutant(s)")
+
+        # Process mutahunter entries (already have diff and source info)
+        return triage_mutahunter_entries(mutant_entries, package_dir, api_key)
+
+    else:
+        # Original mutmut logic
+        results_path = cache_dir / "mutmut_results.txt"
+        stats_path = package_dir / "mutants" / "mutmut-stats.json"
+
+        survived = parse_survived_mutants(results_path)
+        if not survived:
+            print("No survived mutants found.")
+            return []
+
+        print(f"Found {len(survived)} survived mutant(s)")
+
+        if limit:
+            survived = survived[:limit]
+            print(f"Limited to first {limit} mutant(s)")
 
     # Load stats
     stats = {}
@@ -395,7 +489,9 @@ def main() -> int:
         print(f"Loading triage results from {triage_cache_path}")
         triage_results = json.loads(triage_cache_path.read_text())
     else:
-        triage_results = triage_mutants(package_dir, api_key, args.limit)
+        triage_results = triage_mutants(
+            package_dir, api_key, args.limit, args.mutation_engine
+        )
 
         # Cache triage results
         triage_cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -421,6 +517,7 @@ def main() -> int:
         interactive=not args.auto,
         dry_run=args.dry_run,
         limit=args.limit,
+        mutation_engine=args.mutation_engine,
     )
 
     # Step 4: Create PR if auto mode and not dry run

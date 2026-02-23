@@ -41,6 +41,21 @@ def generate_test_code(
     """
     system_prompt = """You are an expert Python test engineer. Your job is to write unit tests that kill specific mutants.
 
+**CRITICAL: What "killing a mutant" means:**
+A test "kills" a mutant if it:
+1. PASSES when run against the ORIGINAL (correct) code
+2. FAILS when run against the MUTATED (incorrect) code
+
+Your test should assert the CORRECT behavior (what the original code does), NOT what the mutant does.
+
+**Example:**
+- Original code: `return x < 10`
+- Mutant code: `return x <= 10`
+- To kill this mutant, test with x=10:
+  - Assert False (because 10 < 10 is False in original)
+  - This passes with original (10 < 10 = False ✓)
+  - This fails with mutant (10 <= 10 = True ✗) → MUTANT KILLED
+
 Given:
 1. A description of what mutation survived
 2. The existing test file content
@@ -59,10 +74,13 @@ Output JSON format:
 Requirements:
 - Use proper indentation (4 spaces for method body, 8 spaces for method contents)
 - Include docstring explaining what the test does
-- Use appropriate assertions from unittest
+- Use appropriate assertions from unittest (assertEqual, assertTrue, assertFalse, etc.)
 - Follow the style of existing tests
 - Make the test as minimal as possible - only test the specific mutation
 - DO NOT include class definition or imports (just the method)
+- **ALWAYS assert the ORIGINAL code's behavior, not the mutant's behavior**
+- **ALWAYS use an EXISTING test class from the test file - NEVER create a new class**
+- If the agent_prompt suggests a new class, choose the most appropriate existing class instead
 """
 
     source_context = ""
