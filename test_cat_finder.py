@@ -232,9 +232,10 @@ class TestAddToUrlDynamodb(unittest.TestCase):
     def test_timestamp_format_in_url(self):
         """Verify that the timestamp format in the URL field matches %Y-%m-%d_%H-%M-%S."""
         import re
+        from uuid import UUID
         mock_table = MagicMock()
         expected_timestamp = '2020-01-02_03-04-05'
-        expected_uuid = 'fixed-uuid'
+        expected_uuid = UUID('12345678-1234-5678-1234-567812345678')
         with patch('cat_finder.uuid') as mock_uuid:
             with patch('cat_finder.datetime') as mock_datetime:
                 mock_datetime.now.return_value.strftime.return_value = expected_timestamp
@@ -248,8 +249,9 @@ class TestAddToUrlDynamodb(unittest.TestCase):
     def test_timestamp_format_in_unique_id(self):
         """Verify that the unique_id generated includes a timestamp in the format %y-%m-%d_%h-%m-%s."""
         import re
+        from uuid import UUID
         mock_table = MagicMock()
-        expected_uuid = 'fixed-uuid'
+        expected_uuid = UUID('12345678-1234-5678-1234-567812345678')
         with patch('cat_finder.uuid') as mock_uuid:
             with patch('cat_finder.datetime') as mock_datetime:
                 mock_datetime.now.return_value.strftime.return_value = '20-01-02_03-04-05'
@@ -414,20 +416,34 @@ class TestProcessDetection(unittest.TestCase):
         mock_remove.assert_not_called()
 
     def test_add_to_data_dynamodb_with_none_image_name(self):
-        """Test that adding an entry with None as the image name does not store data in DynamoDB."""
+        """Test that when model returns no results, previous label is preserved and no DynamoDB write occurs."""
         self.request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+        # Model returns None (no classification results)
+        self.imx500.get_outputs.return_value = None
+
         result = process_detection(
             self.request, self.imx500, self.intrinsics,
             self.data_table, self.url_table, self.s3_client,
             self.labels, s3_bucket="bucket",
-            is_button_triggered=True, darkness_threshold=30
+            is_button_triggered=False, previous_label="checo", darkness_threshold=30
         )
-        self.assertEqual(result, "none")
+        self.assertEqual(result, "checo")
         self.data_table.put_item.assert_not_called()
 
-    def test_button_triggered_with_none_image_name(self):
-        """Test that adding an entry with None as the fourth argument to add_to_data_dynamodb is handled correctly."""
-        self.request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+    @patch('cat_finder.os.path.exists', return_value=True)
+    @patch('cat_finder.os.remove')
+    @patch('cat_finder.os.makedirs')
+    @patch('cat_finder.datetime')
+    def test_button_triggered_with_none_image_name(self, mock_datetime, mock_makedirs, mock_remove, mock_exists):
+        """Test that when button is triggered with dark image, image is still saved with generated filename."""
+        from datetime import datetime
+        fixed_datetime = datetime(2025, 1, 15, 12, 30, 0)
+        mock_datetime.now.return_value = fixed_datetime
+
+        # Make image dark
+        self.request.make_array.return_value = np.full((100, 100, 3), 5, dtype=np.uint8)
+        self.s3_client.upload_file.return_value = None  # success
+
         result = process_detection(
             self.request, self.imx500, self.intrinsics,
             self.data_table, self.url_table, self.s3_client,
@@ -436,15 +452,17 @@ class TestProcessDetection(unittest.TestCase):
         )
         self.assertEqual(result, "none")
         self.data_table.put_item.assert_called_once()
-        self.data_table.put_item.assert_called_with(
-            Item={
-                'Date': '2025-01-15',
-                'Timestamp': '2025-01-15_12-30-00',
-                'image_name': None,
-                'label': 'none',
-                'confidence': 100
-            }
-        )
+
+        # Verify the item structure (dark images ARE saved when button triggered)
+        item = self.data_table.put_item.call_args[1]['Item']
+        self.assertEqual(item['Date'], '2025-01-15')
+        self.assertEqual(item['Timestamp'], '2025-01-15_12-30-00')
+        # Image name should be generated (timestamp_uuid.jpg)
+        self.assertIsNotNone(item['image_name'])
+        self.assertTrue(item['image_name'].startswith('2025-01-15_12-30-00_'))
+        self.assertTrue(item['image_name'].endswith('.jpg'))
+        self.assertEqual(item['label'], 'none')
+        self.assertEqual(item['confidence'], 100)
 
 
 class TestButtonPressed(unittest.TestCase):

@@ -23,6 +23,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not required if env vars set directly
+
 from .triage import (
     parse_survived_mutants,
     mangled_name_from_mutant_id,
@@ -42,11 +48,15 @@ def run_mutmut(package_dir: Path, source_file: str = "cat_finder.py") -> bool:
     print("Step 1: Running mutmut to generate mutations...")
     print("=" * 80)
 
+    # Use venv Python if available
+    venv_python = Path(__file__).parent / "venv" / "bin" / "python"
+    python_cmd = str(venv_python) if venv_python.exists() else sys.executable
+
     # Use the custom run_mutmut.py wrapper (from agentic_testing folder)
     mutmut_wrapper = Path(__file__).parent / "run_mutmut.py"
 
     cmd = [
-        sys.executable,
+        python_cmd,
         str(mutmut_wrapper),
         "run",
         "--paths-to-mutate",
@@ -61,7 +71,7 @@ def run_mutmut(package_dir: Path, source_file: str = "cat_finder.py") -> bool:
             print(result.stderr, file=sys.stderr)
 
         # Generate results file
-        results_cmd = [sys.executable, str(mutmut_wrapper), "results"]
+        results_cmd = [python_cmd, str(mutmut_wrapper), "results"]
         cache_dir = package_dir / ".agentic_testing_cache"
         cache_dir.mkdir(exist_ok=True)
         results_output = cache_dir / "mutmut_results.txt"
@@ -80,50 +90,6 @@ def run_mutmut(package_dir: Path, source_file: str = "cat_finder.py") -> bool:
         return False
 
 
-def run_mutahunter(
-    package_dir: Path,
-    source_file: str = "cat_finder.py",
-    test_file: str = "test_cat_finder.py",
-    model: str = "gpt-4o-mini",
-) -> bool:
-    """Run mutahunter to generate LLM-powered mutations."""
-    print("Step 1: Running mutahunter to generate mutations...")
-    print("=" * 80)
-    print("Note: mutahunter uses LLM to generate realistic mutations (slower but smarter)")
-
-    # Check if mutahunter is available
-    try:
-        import subprocess
-        result = subprocess.run(
-            ["mutahunter", "--version"],
-            capture_output=True,
-            timeout=5,
-        )
-    except FileNotFoundError:
-        print("\n❌ mutahunter not installed.", file=sys.stderr)
-        print("\nTo install:", file=sys.stderr)
-        print("  pip install mutahunter certifi httpx litellm", file=sys.stderr)
-        print("\nOr use mutmut (default):", file=sys.stderr)
-        print("  python -m agentic_testing.cli", file=sys.stderr)
-        return False
-    except Exception as e:
-        print(f"\n⚠️  Warning: Could not verify mutahunter installation: {e}", file=sys.stderr)
-
-    cache_dir = package_dir / ".agentic_testing_cache"
-    cache_dir.mkdir(exist_ok=True)
-
-    from .run_mutahunter import run_mutahunter as run_mh
-
-    success = run_mh(source_file, test_file, str(cache_dir), model)
-
-    if success:
-        # Convert mutahunter output to mutmut-compatible format
-        # For now, just create a results file
-        results_output = cache_dir / "mutmut_results.txt"
-        results_output.write_text("# mutahunter results\n# TODO: parse mutahunter output\n")
-        print(f"\nResults written to {results_output}")
-
-    return success
 
 
 def triage_mutants(
@@ -319,12 +285,6 @@ def main() -> int:
         help="Skip triage step (use existing triage results from triage.json)",
     )
     parser.add_argument(
-        "--mutation-engine",
-        choices=["mutmut", "mutahunter"],
-        default="mutmut",
-        help="Mutation engine: mutmut (rule-based, fast) or mutahunter (LLM-powered, realistic)",
-    )
-    parser.add_argument(
         "--source-file",
         default="cat_finder.py",
         help="Source file to mutate (default: cat_finder.py)",
@@ -350,19 +310,12 @@ def main() -> int:
     print("║" + " " * 15 + "Inspired by Meta's ACH System" + " " * 34 + "║")
     print("╚" + "=" * 78 + "╝")
 
-    # Step 1: Run mutation engine (unless skipped)
+    # Step 1: Run mutmut (unless skipped)
     if not args.skip_mutmut:
-        if args.mutation_engine == "mutmut":
-            if not run_mutmut(package_dir, args.source_file):
-                return 1
-        elif args.mutation_engine == "mutahunter":
-            if not run_mutahunter(package_dir, args.source_file, args.test_file):
-                return 1
-        else:
-            print(f"Unknown mutation engine: {args.mutation_engine}", file=sys.stderr)
+        if not run_mutmut(package_dir, args.source_file):
             return 1
     else:
-        print(f"Skipping {args.mutation_engine} run (using existing results)")
+        print("Skipping mutmut run (using existing results)")
 
     # Step 2: Triage mutants (unless skipped)
     triage_results = []
