@@ -260,7 +260,24 @@ class TestAddToUrlDynamodb(unittest.TestCase):
                 pattern = r'\d{2}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_\w{8}-\w{4}-\w{4}-\w{4}-\w{12}'
                 self.assertRegex(unique_id, pattern)
 
-
+    def test_timestamp_format_in_url_without_extra_characters(self):
+        """Verify that the timestamp in the URL field matches the format %Y-%m-%d_%H-%M-%S without extra characters."""
+        import re
+        from uuid import UUID
+        from datetime import datetime
+        mock_table = MagicMock()
+        expected_timestamp = datetime(2020, 1, 2, 3, 4, 5)
+        expected_uuid = UUID('12345678-1234-5678-1234-567812345678')
+        with patch('cat_finder.uuid') as mock_uuid:
+            with patch('cat_finder.datetime') as mock_datetime:
+                mock_datetime.now.return_value = expected_timestamp
+                mock_uuid.uuid4.return_value = expected_uuid
+                add_to_url_dynamodb(mock_table, 's3://bucket/object')
+                item = mock_table.put_item.call_args[1]['Item']
+                url = item['URL']
+                pattern = r'\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_\w{8}-\w{4}-\w{4}-\w{4}-\w{12}'
+                self.assertRegex(url, pattern)
+                self.assertNotIn('XX', url)  # Ensure no extra characters are present
 class TestUploadToS3(unittest.TestCase):
     def test_success(self):
         client = MagicMock()
