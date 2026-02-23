@@ -8,3 +8,9 @@ mutation_testing/*.txt
 mutation_testing/*.json
 mutation_testing/*survived*.md
 .pytest_cache/
+
+# Agentic testing
+agentic_testing/venv/
+agentic_testing/.agentic_testing_cache/
+.agentic_testing_cache/
+logs/

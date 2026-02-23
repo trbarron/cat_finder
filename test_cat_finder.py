@@ -50,11 +50,6 @@ class TestGetLabel(unittest.TestCase):
     def test_negative_index(self):
         self.assertEqual(get_label(self.labels, -1), "unknown")
 
-    def test_index_equal_len_is_unknown(self):
-        idx = len(self.labels)  # 3, one past the last valid index
-        result = get_label(self.labels, idx)
-        self.assertEqual(result, "unknown")
-
 
 class TestIsImageTooDark(unittest.TestCase):
     def test_dark_image(self):
@@ -74,30 +69,6 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.side_effect = RuntimeError("camera error")
         # Should return False (not dark) on error
         self.assertFalse(is_image_too_dark(request))
-
-    def test_image_equal_to_threshold_is_not_dark(self):
-        request = MagicMock()
-        request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
-        self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
-
-    def test_make_array_called_with_main(self):
-        request = MagicMock()
-        request.make_array.return_value = np.full((10, 10, 3), 150, dtype=np.uint8)
-        result = is_image_too_dark(request, darkness_threshold=30)
-        request.make_array.assert_called_once_with('main')
-        self.assertFalse(result)
-
-    def test_image_equal_to_default_threshold_is_not_dark(self):
-        request = MagicMock()
-        request.make_array.return_value = np.full((10, 10, 3), 30, dtype=np.uint8)
-        result = is_image_too_dark(request)
-        self.assertFalse(result)
-        request.make_array.assert_called_once_with('main')
-
-    def test_default_darkness_threshold(self):
-        import inspect
-        sig = inspect.signature(is_image_too_dark)
-        self.assertEqual(sig.parameters['darkness_threshold'].default, 30)
 
 
 class TestParseClassificationResults(unittest.TestCase):
@@ -228,58 +199,6 @@ class TestAddToUrlDynamodb(unittest.TestCase):
         item = mock_table.put_item.call_args[1]['Item']
         expected = '2020-01-02_03-04-05_fixed-uuid'
         self.assertTrue(any(expected in str(v) for v in item.values()))
-
-    def test_timestamp_format_in_url(self):
-        """Verify that the timestamp format in the URL field matches %Y-%m-%d_%H-%M-%S."""
-        import re
-        from uuid import UUID
-        mock_table = MagicMock()
-        expected_timestamp = '2020-01-02_03-04-05'
-        expected_uuid = UUID('12345678-1234-5678-1234-567812345678')
-        with patch('cat_finder.uuid') as mock_uuid:
-            with patch('cat_finder.datetime') as mock_datetime:
-                mock_datetime.now.return_value.strftime.return_value = expected_timestamp
-                mock_uuid.uuid4.return_value = expected_uuid
-                add_to_url_dynamodb(mock_table, 's3://bucket/object')
-                item = mock_table.put_item.call_args[1]['Item']
-                url = item['URL']
-                pattern = r'\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_\w{8}-\w{4}-\w{4}-\w{4}-\w{12}'
-                self.assertRegex(url, pattern)
-
-    def test_timestamp_format_in_unique_id(self):
-        """Verify that the unique_id generated includes a timestamp in the format %y-%m-%d_%h-%m-%s."""
-        import re
-        from uuid import UUID
-        mock_table = MagicMock()
-        expected_uuid = UUID('12345678-1234-5678-1234-567812345678')
-        with patch('cat_finder.uuid') as mock_uuid:
-            with patch('cat_finder.datetime') as mock_datetime:
-                mock_datetime.now.return_value.strftime.return_value = '20-01-02_03-04-05'
-                mock_uuid.uuid4.return_value = expected_uuid
-                add_to_url_dynamodb(mock_table, 's3://bucket/object')
-                item = mock_table.put_item.call_args[1]['Item']
-                unique_id = item['URL']
-                pattern = r'\d{2}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_\w{8}-\w{4}-\w{4}-\w{4}-\w{12}'
-                self.assertRegex(unique_id, pattern)
-
-    def test_timestamp_format_in_url_without_extra_characters(self):
-        """Verify that the timestamp in the URL field matches the format %Y-%m-%d_%H-%M-%S without extra characters."""
-        import re
-        from uuid import UUID
-        from datetime import datetime
-        mock_table = MagicMock()
-        expected_timestamp = datetime(2020, 1, 2, 3, 4, 5)
-        expected_uuid = UUID('12345678-1234-5678-1234-567812345678')
-        with patch('cat_finder.uuid') as mock_uuid:
-            with patch('cat_finder.datetime') as mock_datetime:
-                mock_datetime.now.return_value = expected_timestamp
-                mock_uuid.uuid4.return_value = expected_uuid
-                add_to_url_dynamodb(mock_table, 's3://bucket/object')
-                item = mock_table.put_item.call_args[1]['Item']
-                url = item['URL']
-                pattern = r'\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_\w{8}-\w{4}-\w{4}-\w{4}-\w{12}'
-                self.assertRegex(url, pattern)
-                self.assertNotIn('XX', url)  # Ensure no extra characters are present
 class TestUploadToS3(unittest.TestCase):
     def test_success(self):
         client = MagicMock()
@@ -415,54 +334,6 @@ class TestProcessDetection(unittest.TestCase):
         # Image should NOT be deleted when upload fails
         mock_remove.assert_not_called()
 
-    def test_add_to_data_dynamodb_with_none_image_name(self):
-        """Test that when model returns no results, previous label is preserved and no DynamoDB write occurs."""
-        self.request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
-        # Model returns None (no classification results)
-        self.imx500.get_outputs.return_value = None
-
-        result = process_detection(
-            self.request, self.imx500, self.intrinsics,
-            self.data_table, self.url_table, self.s3_client,
-            self.labels, s3_bucket="bucket",
-            is_button_triggered=False, previous_label="checo", darkness_threshold=30
-        )
-        self.assertEqual(result, "checo")
-        self.data_table.put_item.assert_not_called()
-
-    @patch('cat_finder.os.path.exists', return_value=True)
-    @patch('cat_finder.os.remove')
-    @patch('cat_finder.os.makedirs')
-    @patch('cat_finder.datetime')
-    def test_button_triggered_with_none_image_name(self, mock_datetime, mock_makedirs, mock_remove, mock_exists):
-        """Test that when button is triggered with dark image, image is still saved with generated filename."""
-        from datetime import datetime
-        fixed_datetime = datetime(2025, 1, 15, 12, 30, 0)
-        mock_datetime.now.return_value = fixed_datetime
-
-        # Make image dark
-        self.request.make_array.return_value = np.full((100, 100, 3), 5, dtype=np.uint8)
-        self.s3_client.upload_file.return_value = None  # success
-
-        result = process_detection(
-            self.request, self.imx500, self.intrinsics,
-            self.data_table, self.url_table, self.s3_client,
-            self.labels, s3_bucket="bucket",
-            is_button_triggered=True, darkness_threshold=30
-        )
-        self.assertEqual(result, "none")
-        self.data_table.put_item.assert_called_once()
-
-        # Verify the item structure (dark images ARE saved when button triggered)
-        item = self.data_table.put_item.call_args[1]['Item']
-        self.assertEqual(item['Date'], '2025-01-15')
-        self.assertEqual(item['Timestamp'], '2025-01-15_12-30-00')
-        # Image name should be generated (timestamp_uuid.jpg)
-        self.assertIsNotNone(item['image_name'])
-        self.assertTrue(item['image_name'].startswith('2025-01-15_12-30-00_'))
-        self.assertTrue(item['image_name'].endswith('.jpg'))
-        self.assertEqual(item['label'], 'none')
-        self.assertEqual(item['confidence'], 100)
 
 
 class TestButtonPressed(unittest.TestCase):

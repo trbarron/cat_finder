@@ -70,9 +70,11 @@ def process_mutant(
             "reason": "No agent_prompt available",
         }
 
-    print(f"\n{'='*80}")
-    print(f"Processing mutant: {mutant_id}")
-    print(f"{'='*80}")
+    print(f"\n{'-'*80}")
+    print(f"Mutant: {mutant_id}")
+    if source_file:
+        print(f"Source: {source_file}:{line_no if line_no else '?'}")
+    print(f"{'-'*80}")
 
     # Extract test file path from agent_prompt (heuristic)
     test_file_name = "test_cat_finder.py"  # Default
@@ -202,7 +204,7 @@ def process_mutant(
             )
 
             if verify_success:
-                print(f"   ✓ {verify_msg}")
+                print(f"   PASS: {verify_msg}")
                 return {
                     "mutant_id": mutant_id,
                     "status": "success",
@@ -291,7 +293,7 @@ def run_agent_loop(
             break
 
     # Summary
-    print(f"\n\n{'='*80}")
+    print(f"\n{'='*80}")
     print("SUMMARY")
     print(f"{'='*80}")
 
@@ -300,11 +302,12 @@ def run_agent_loop(
     skipped_count = sum(1 for r in results if r["status"] == "skipped")
     rejected_count = sum(1 for r in results if r["status"] == "rejected")
 
-    print(f"Total processed: {len(results)}")
-    print(f"  Success: {success_count}")
-    print(f"  Errors: {error_count}")
-    print(f"  Skipped: {skipped_count}")
-    print(f"  Rejected: {rejected_count}")
+    total = len(results)
+    print(f"Processed:  {total}")
+    print(f"  Success:  {success_count:3d} ({success_count*100//total if total else 0}%)")
+    print(f"  Errors:   {error_count:3d}")
+    print(f"  Skipped:  {skipped_count:3d}")
+    print(f"  Rejected: {rejected_count:3d}")
 
     return {
         "total": len(results),

@@ -7,17 +7,22 @@ Inspired by Meta's ACH (Automated Compliance Hardening) paper: [Revolutionizing 
 ## Quick Start
 
 ```bash
-# From cat_finder directory
+# One-time setup
+cd agentic_testing
+./setup.sh
+
+# Run from cat_finder directory
+cd ..
 python3 -m agentic_testing.cli
 
 # With options
 python3 -m agentic_testing.cli --limit 5 --auto
-python3 -m agentic_testing.cli --dry-run
+python3 -m agentic_testing.cli --mutation-engine mutahunter
 ```
 
 ## How It Works
 
-1. **Mutation Generation**: Runs mutmut to create code mutations
+1. **Mutation Generation**: Runs mutmut (rule-based) or mutahunter (LLM-powered)
 2. **LLM Triage**: Analyzes survived mutants to filter out false positives
 3. **Test Generation**: Uses LLM to generate targeted tests
 4. **Self-Correction**: Automatically fixes failed tests (up to 3 iterations)
@@ -27,13 +32,26 @@ python3 -m agentic_testing.cli --dry-run
 
 ### Virtual Environment
 
-The module uses its own venv for dependency isolation:
+The module uses its own venv for dependency isolation. **Python 3.11 required** (mutahunter dependency limitation):
 
 ```bash
 cd agentic_testing
 
-# Venv already created, to reinstall dependencies:
+# Create venv with Python 3.11
+python3.11 -m venv venv
+
+# Install core dependencies
 ./venv/bin/pip install -r requirements.txt
+
+# Install mutahunter (LLM-powered mutations)
+./venv/bin/pip install git+https://github.com/codeintegrity-ai/mutahunter.git
+
+# Apply bug fix (one-line patch for AttributeError)
+sed -i '' '51 a\
+        self.unexpected_test_error_mutants = 0
+' ./venv/lib/python3.11/site-packages/mutahunter/core/controller.py
+
+echo "✓ Setup complete!"
 ```
 
 ### Environment Variables
@@ -51,13 +69,26 @@ OPENAI_API_KEY=sk-...
 python3 -m agentic_testing.cli [OPTIONS]
 
 Options:
-  --auto              Auto mode: skip human approval, create PR at end
-  --dry-run           Don't modify files or create PR
-  --limit N           Process only first N mutants
-  --skip-mutmut       Use existing mutation results
-  --skip-triage       Use existing triage results
-  --source-file FILE  Source file to mutate (default: cat_finder.py)
-  --test-file FILE    Test file (default: test_cat_finder.py)
+  --auto                    Auto mode: skip human approval, create PR at end
+  --dry-run                 Don't modify files or create PR
+  --limit N                 Process only first N mutants
+  --skip-mutmut             Use existing mutation results
+  --skip-triage             Use existing triage results
+  --mutation-engine ENGINE  mutmut (rule-based) or mutahunter (LLM-powered)
+  --source-file FILE        Source file to mutate (default: cat_finder.py)
+  --test-file FILE          Test file (default: test_cat_finder.py)
+```
+
+### Mutation Engines
+
+**mutmut (default)**: Rule-based, fast mutations
+```bash
+python3 -m agentic_testing.cli
+```
+
+**mutahunter**: LLM-powered semantic mutations (requires setup)
+```bash
+python3 -m agentic_testing.cli --mutation-engine mutahunter
 ```
 
 ## Modes
@@ -114,11 +145,31 @@ Only generates tests for real logic bugs.
 - `venv/` - Virtual environment (isolated dependencies)
 - `.agentic_testing_cache/` - Cached results and metadata
 
+## Mutation Engines Comparison
+
+| Feature | mutmut | mutahunter |
+|---------|--------|------------|
+| **Speed** | ⚡ Fast (seconds) | 🐢 Slower (minutes) |
+| **Mutations** | Rule-based (syntax) | LLM-powered (semantic) |
+| **Setup** | Simple | Requires Python 3.11 + fix |
+| **Cost** | Free | ~$0.01-0.05 per file |
+| **Use Case** | Quick iteration | Realistic bugs |
+
+**When to use mutmut:**
+- Fast development iterations
+- Large codebases
+- Cost is a concern
+
+**When to use mutahunter:**
+- Finding realistic, semantic bugs
+- Security-critical code
+- Final validation before release
+
 ## Future Enhancements
 
-- **MutaHunter Support**: LLM-powered semantic mutations (currently has dependency issues)
 - **Multi-file Support**: Generate tests across multiple test files
 - **Coverage Integration**: Track mutation coverage improvements
+- **Upstream Contribution**: Submit mutahunter bug fix to maintainers
 
 ## Troubleshooting
 
