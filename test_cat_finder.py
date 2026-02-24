@@ -391,6 +391,33 @@ class TestProcessDetection(unittest.TestCase):
         self.assertEqual(result, "checo")
         # Image should NOT be deleted when upload fails
         mock_remove.assert_not_called()
+
+    @patch('cat_finder.os.path.exists', return_value=True)
+    @patch('cat_finder.os.remove')
+    @patch('cat_finder.os.makedirs')
+    def test_dark_image_button_press_records_confidence_100(self, mock_makedirs, mock_remove, mock_exists):
+        """When a dark image is processed with is_button_triggered=True, the entry written
+        to the data DynamoDB table should have confidence == 100 (original behavior).
+        This will fail against the mutant that records confidence 0.
+        """
+        # Make image dark
+        self.request.make_array.return_value = np.full((100, 100, 3), 5, dtype=np.uint8)
+        # Simulate successful upload (no exception) so flow proceeds as in original
+        self.s3_client.upload_file.return_value = None
+
+        result = process_detection(
+            self.request, self.imx500, self.intrinsics,
+            self.data_table, self.url_table, self.s3_client,
+            self.labels, s3_bucket="bucket",
+            is_button_triggered=True, darkness_threshold=30
+        )
+
+        self.assertEqual(result, "none")
+        self.data_table.put_item.assert_called_once()
+        item = self.data_table.put_item.call_args[1]['Item']
+        # Assert the original code records confidence 100 for a button-triggered dark image
+        self.assertEqual(item['confidence'], 100)
+
 class TestButtonPressed(unittest.TestCase):
     def test_sets_flag_on_falling_edge(self):
         flag = [False]
