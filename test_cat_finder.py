@@ -213,6 +213,41 @@ class TestParseClassificationResults(unittest.TestCase):
         # With softmax applied, the scores for all 3 classes should sum to 1.0
         self.assertAlmostEqual(total_score, 1.0, places=6)
 
+    def test_add_to_data_dynamodb_receives_correct_confidence_for_0_8(self):
+        """Ensure that when a classification with confidence 0.8 is logged,
+        add_to_data_dynamodb is called with int(0.8 * 100) == 80 (not 180).
+        """
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+        data_table = MagicMock()
+        url_table = MagicMock()
+        s3_client = MagicMock()
+        labels = ["neither", "checo", "tuni"]
+
+        # Bright image so we don't hit the darkness branch
+        request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+        # Model returns high confidence (0.8) for class index 1 ('checo')
+        output = np.array([[0.05, 0.8, 0.15]])
+        imx500.get_outputs.return_value = [output]
+
+        with patch('cat_finder.add_to_data_dynamodb') as mock_add:
+            result = process_detection(
+                request, imx500, intrinsics,
+                data_table, url_table, s3_client,
+                labels, s3_bucket="bucket",
+                previous_label="checo", darkness_threshold=30
+            )
+
+            # Should return the detected label
+            self.assertEqual(result, "checo")
+            # add_to_data_dynamodb must have been called once for the consecutive match
+            mock_add.assert_called_once()
+            # The 5th positional arg is the integer confidence; expect 80 (int(0.8 * 100))
+            self.assertEqual(mock_add.call_args[0][4], 80)
+
+
 class TestAddToDataDynamodb(unittest.TestCase):
     def test_correct_item_structure(self):
         table = MagicMock()
