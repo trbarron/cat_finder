@@ -391,6 +391,28 @@ class TestProcessDetection(unittest.TestCase):
         self.assertEqual(result, "checo")
         # Image should NOT be deleted when upload fails
         mock_remove.assert_not_called()
+
+    def test_confidence_equal_to_075_not_logged(self):
+        """Ensure a detection with confidence exactly 0.75 is NOT treated as a consecutive
+        confirmation (original uses > 0.75) and therefore is not logged to DynamoDB.
+        """
+        # Bright image to avoid the darkness branch
+        self.request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+        # Model returns exactly 0.75 confidence for class index 1 ('checo')
+        output = np.array([[0.05, 0.75, 0.20]])
+        self.imx500.get_outputs.return_value = [output]
+
+        result = process_detection(
+            self.request, self.imx500, self.intrinsics,
+            self.data_table, self.url_table, self.s3_client,
+            self.labels, s3_bucket="bucket",
+            previous_label="checo", darkness_threshold=30
+        )
+
+        # Should return the detected label but NOT log it because confidence == 0.75 (not > 0.75)
+        self.assertEqual(result, "checo")
+        self.data_table.put_item.assert_not_called()
+
 class TestButtonPressed(unittest.TestCase):
     def test_sets_flag_on_falling_edge(self):
         flag = [False]
