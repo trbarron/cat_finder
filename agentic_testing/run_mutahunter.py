@@ -5,6 +5,7 @@ Wrapper to run mutahunter for LLM-powered mutation generation.
 Requires Python 3.11 and the venv setup.
 """
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -52,11 +53,15 @@ def run_mutahunter(
     ]
 
     try:
+        # gpt-5-mini only supports temperature=1; tell litellm to drop unsupported params
+        env = {**os.environ, "LITELLM_DROP_PARAMS": "true"}
+
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             timeout=600,  # 10 minutes for LLM calls
+            env=env,
         )
 
         print(result.stdout)

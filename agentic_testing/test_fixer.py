@@ -4,13 +4,11 @@ Fix failed tests using LLM based on error messages.
 """
 
 import json
-import urllib.request
-from pathlib import Path
 
+from .llm_client import call_llm
 
-LLM_MODEL = "gpt-5-mini"
-LLM_TEMPERATURE = 1  # gpt-5-mini only supports temperature=1
-LLM_API_URL = "https://api.openai.com/v1/chat/completions"
+LLM_MODEL = "gpt-4o-mini"
+LLM_TEMPERATURE = 1
 
 
 def fix_failed_test(
@@ -21,6 +19,7 @@ def fix_failed_test(
     source_snippet: str,
     agent_prompt: str,
     api_key: str,
+    mutation_diff: str = "",
 ) -> dict:
     """
     Fix a failed test using LLM based on the error message.
@@ -88,6 +87,37 @@ Common issues to fix:
    - RIGHT: Call the function directly and mock its dependencies instead
    - RIGHT: Or test via the code path that calls the function through the module
 
+8. **Import rules inside test methods:**
+   - Stdlib imports (threading, uuid, datetime, etc.) ARE allowed inside test methods.
+   - `import cat_finder` (bare import) is allowed -- use `cat_finder.main()`, `cat_finder.DARKNESS_THRESHOLD`, etc.
+   - `from cat_finder import ...` is STRICTLY FORBIDDEN inside test methods. This WILL be rejected by the test applier.
+   - If you need main(), use: `import cat_finder` then `cat_finder.main()` -- NEVER `from cat_finder import main`.
+
+
+9. **NEVER use source inspection as a fix strategy:**
+   - NEVER use `inspect.getsource()` to check source code text
+   - Tests must verify BEHAVIOR (call the function, check results/side effects), not source text
+   - If a behavioral test is hard to write, simplify the test approach rather than falling back to source inspection
+
+10. **Module-level constants vs function parameter defaults:**
+    - If the mutant targets a module-level constant, the test must exercise the code path that actually uses it
+    - Check function signatures for actual default values -- don't assume a function uses a module constant
+
+11. **Don't duplicate existing test coverage:**
+    - If the fix makes the test equivalent to an existing test (same branch, same kind of input), it won't kill the mutant
+    - Focus on the EXACT boundary the mutant changes and pick an input that sits on that boundary
+    - Example: testing empty strings vs None for a falsy check covers the same branch -- find a different approach
+
+12. **NEVER test main() -- test helper functions directly instead:**
+    - If the current test calls main() with complex mocking and keeps failing, REWRITE it to test the specific helper function directly
+    - main() requires FakePi, pigpio, Picamera2, IMX500, camera, boto3, and many more mocks -- these tests ALWAYS fail
+    - If the test currently calls main(), replace it with a direct test of the affected helper function (process_detection, is_image_too_dark, button_pressed, etc.)
+
+13. **Don't assert on print output or guess kwargs:**
+    - Don't use `mock_print.assert_any_call(...)` as the primary assertion
+    - Check the actual function signature before using call_args -- don't assume kwargs like `Item` that belong to different functions
+
+
 Output JSON format:
 {
   "test_code": "    def test_method_name(self):\\n        ...",
@@ -98,7 +128,27 @@ Output JSON format:
 IMPORTANT: Output ONLY the fixed test method code (with proper indentation), not the entire class.
 """
 
-    user_prompt = f"""**Test that failed:**
+    # Format mutation diff as before/after if available
+    diff_section = ""
+    if mutation_diff:
+        before_lines = []
+        after_lines = []
+        for line in mutation_diff.splitlines():
+            if line.startswith("---") or line.startswith("+++") or line.startswith("@@"):
+                continue
+            if line.startswith("-") and not line.startswith("---"):
+                before_lines.append(line[1:].strip())
+            elif line.startswith("+") and not line.startswith("+++"):
+                after_lines.append(line[1:].strip())
+        if before_lines or after_lines:
+            diff_section = f"""
+**MUTATION the test must kill:**
+- ORIGINAL (correct): `{' | '.join(before_lines)}`
+- MUTANT (incorrect):  `{' | '.join(after_lines)}`
+"""
+
+    user_prompt = f"""{diff_section}
+**Test that failed:**
 ```python
 {failed_test_code}
 ```
@@ -116,7 +166,7 @@ IMPORTANT: Output ONLY the fixed test method code (with proper indentation), not
 {source_snippet}
 ```
 
-**Task**: Fix this test so it passes. Analyze the error and make the necessary corrections.
+**Task**: Fix this test so it passes against the ORIGINAL code and fails against the MUTANT code. Analyze the error and make the necessary corrections.
 
 Common fixes needed:
 - If error mentions UUID format: use `from uuid import UUID` and `UUID('12345678-1234-5678-1234-567812345678')`
@@ -127,38 +177,11 @@ Output JSON only with the fixed test code.
 """
 
     try:
-        body = {
-            "model": LLM_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": LLM_TEMPERATURE,
-        }
-
-        req = urllib.request.Request(
-            LLM_API_URL,
-            data=json.dumps(body).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
-            method="POST",
-        )
-
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode())
-
-        text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        text = text.strip()
-
-        # Strip markdown code blocks if present
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            text = text.rsplit("```", 1)[0] if "```" in text else text
-            text = text.strip()
-
-        result = json.loads(text)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        result = call_llm(messages, api_key, model=LLM_MODEL, temperature=LLM_TEMPERATURE)
         result["success"] = True
         return result
 

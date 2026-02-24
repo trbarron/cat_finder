@@ -20,11 +20,11 @@ import re
 import subprocess
 from pathlib import Path
 
+from .llm_client import call_llm
 
 # LLM Configuration
 LLM_MODEL = "gpt-4o-mini"
-LLM_TEMPERATURE = 1.0
-LLM_API_URL = "https://api.openai.com/v1/chat/completions"
+LLM_TEMPERATURE = 0.2
 
 
 def parse_survived_mutants(results_path: Path) -> list[str]:
@@ -126,7 +126,7 @@ def build_llm_prompt(entry: dict) -> str:
 
 **CRITICAL: Carefully check WHERE the mutation occurs.** Look at the diff closely:
 - If the changed line is INSIDE a print(), logging, logger, or warning call, it is a display-only change — do NOT recommend a test, even if the change involves arithmetic or variable substitution within the message string.
-- If the mutation changes an argument to print/log (e.g. `print(f"...{{len(x) - 1}}")` → `print(f"...{{len(x) + 1}}")"`), that is still just a logging change. The arithmetic change is inside the log message, NOT in business logic.
+- If the mutation changes an argument to print/log (e.g. `print(f"...{{len(x) - 1}}")` becomes `print(f"...{{len(x) + 1}}")"`), that is still just a logging change. The arithmetic change is inside the log message, NOT in business logic.
 - Only flag arithmetic or logic changes when they affect a **return value, assignment, conditional, or function argument that controls program behavior** — NOT when they only affect what gets printed.
 
 Do NOT recommend tests for:
@@ -136,8 +136,15 @@ Do NOT recommend tests for:
 - Cosmetic changes (variable names in error messages, f-string tweaks)
 - Equivalent mutations that produce the same observable behavior
 - Changes to code that only affects developer-facing output (not return values, not side effects)
+- **Mutations inside main()** — main() requires pigpio, Picamera2, IMX500, camera, boto3, and complex hardware mocking that cannot be reliably unit tested. If the mutation is in main()'s setup code (pi.callback, camera config, etc.), do NOT recommend a test.
 
 Only recommend a test if the mutation changes a **return value, a stored value (e.g. database entry), a control flow decision, or an externally visible side effect** in a way that would be wrong.
+
+**CRITICAL: Check if existing tests already cover the mutated branch.**
+- Look at the test file content provided below. If an existing test already exercises the SAME code path / condition that the mutant changes, a new test is unlikely to help — the mutant likely survives for a reason other than missing coverage (e.g., equivalent mutation).
+- Only recommend a new test if you can identify a SPECIFIC input that sits on the exact boundary the mutant changes (e.g., `<` vs `<=` at threshold=10 means testing with exactly 10).
+- If the mutant changes a module-level constant, check whether any test actually exercises the code path that USES that constant (not just calls the function with a different default).
+- Do NOT recommend tests that would be equivalent to existing ones (same branch, same kind of input).
 
 **Mutant ID:** {entry["mutant_id"]}
 
@@ -181,36 +188,7 @@ Example 2 (comparison operator):
 def fetch_llm_analysis(prompt: str, api_key: str) -> dict | None:
     """Call OpenAI API (or compatible) and return parsed JSON analysis."""
     try:
-        import urllib.request
-
-        body = {
-            "model": LLM_MODEL,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            "temperature": LLM_TEMPERATURE,
-        }
-        req = urllib.request.Request(
-            LLM_API_URL,
-            data=json.dumps(body).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode())
-        text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-        # Try to parse JSON from the response (might be wrapped in markdown)
-        text = text.strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```\w*\n?", "", text)
-            text = re.sub(r"\n?```\s*$", "", text)
-        return json.loads(text)
+        messages = [{"role": "user", "content": prompt}]
+        return call_llm(messages, api_key, model=LLM_MODEL, temperature=LLM_TEMPERATURE, timeout=60)
     except Exception as e:
         return {"error": str(e), "should_write_test": None, "reason": "", "suggestion": ""}

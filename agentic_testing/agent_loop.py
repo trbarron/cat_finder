@@ -12,6 +12,7 @@ Inspired by Meta's ACH (Automated Compliance Hardening):
 """
 
 import json
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -22,8 +23,7 @@ from .test_applier import apply_test
 from .verifier import verify_test_kills_mutant
 from .test_fixer import fix_failed_test
 from .error_extractor import extract_pytest_error
-import subprocess
-import sys
+from .phase_logger import PhaseLogger
 
 
 def check_tests_pass(package_dir: Path, test_file: str = "test_cat_finder.py") -> tuple[bool, str]:
@@ -147,22 +147,6 @@ Total processed:      {total}
         print(f"  Generated tests: {self.generated_tests_file}")
 
 
-def load_triage_results(report_path: Path) -> list[dict[str, Any]]:
-    """
-    Parse the triage report (from analyze_survived_mutants.py --call-llm)
-    and extract mutants that need tests.
-
-    For now, we'll work with the raw analysis data structure.
-    In practice, we'll need to load the JSON-formatted results.
-
-    Returns:
-        List of mutant entries that should_write_test is True
-    """
-    # This would load from a JSON export of the triage results
-    # For now, returning empty list as placeholder
-    return []
-
-
 def process_mutant(
     mutant_entry: dict[str, Any],
     package_dir: Path,
@@ -172,6 +156,7 @@ def process_mutant(
     max_iterations: int = 5,
     logger: AgentLogger = None,
     mutation_engine: str = "mutmut",
+    phase_logger: PhaseLogger | None = None,
 ) -> dict[str, Any]:
     """
     Process a single mutant: generate test, apply, verify.
@@ -225,10 +210,15 @@ def process_mutant(
 
     existing_test_content = test_file_path.read_text()
 
-    # Get source snippet for better context
+    # Get source context for LLM
     source_snippet = mutant_entry.get("source_snippet", "")
     diff = mutant_entry.get("diff", "")
     full_source_context = f"{diff}\n\n{source_snippet}" if diff and source_snippet else (source_snippet or diff or "")
+
+    # Read full source file for richer LLM context
+    source_file_name = mutant_entry.get("source_file", "cat_finder.py")
+    source_file_path = package_dir / source_file_name
+    full_source = source_file_path.read_text() if source_file_path.exists() else ""
 
     # Iteration loop: try to generate and fix test up to max_iterations times
     test_class = None
@@ -245,12 +235,23 @@ def process_mutant(
             print(f"\n1. Generating test code...")
             print(f"   Agent prompt: {agent_prompt[:100]}...")
 
+            if phase_logger:
+                phase_logger.log_generation_request(mutant_id, agent_prompt)
+
             test_result = generate_test_code(
-                agent_prompt, test_file_path, existing_test_content, api_key, full_source_context
+                agent_prompt, test_file_path, existing_test_content, api_key, full_source_context,
+                full_source=full_source,
+                mutation_diff=diff,
             )
+
+            if phase_logger:
+                phase_logger.log_generation_response(mutant_id, test_result)
         else:
             # Iteration > 1: Fix the failed test
             print(f"\n1. Fixing test{iteration_suffix}...")
+            if phase_logger:
+                phase_logger.log_fixing_attempt(mutant_id, iteration, error_message)
+
             test_result = fix_failed_test(
                 test_code,
                 error_message,
@@ -259,7 +260,11 @@ def process_mutant(
                 full_source_context,
                 agent_prompt,
                 api_key,
+                mutation_diff=diff,
             )
+
+            if phase_logger:
+                phase_logger.log_fixing_response(mutant_id, iteration, test_result)
 
         if not test_result.get("success"):
             error_msg = test_result.get('error', 'Unknown error')
@@ -344,10 +349,13 @@ def process_mutant(
                 package_dir,
                 mutation_engine=mutation_engine,
                 mutant_file_path=mutant_file_path,
+                test_method_name=test_method_name,
             )
 
             if verify_success:
                 print(f"   PASS: {verify_msg}")
+                if phase_logger:
+                    phase_logger.log_verification(mutant_id, "mutant", True, verify_msg)
                 return {
                     "mutant_id": mutant_id,
                     "status": "success",
@@ -358,6 +366,8 @@ def process_mutant(
                 }
             else:
                 print(f"   FAIL: Verification failed")
+                if phase_logger:
+                    phase_logger.log_verification(mutant_id, "mutant", False, verify_msg)
                 # Extract error for next iteration - pass full trace for better LLM context
                 error_info = extract_pytest_error(verify_msg)
                 full_trace = error_info.get("full_trace", "")
@@ -425,6 +435,7 @@ def run_agent_loop(
     dry_run: bool = False,
     limit: int | None = None,
     mutation_engine: str = "mutmut",
+    phase_logger: PhaseLogger | None = None,
 ) -> dict[str, Any]:
     """
     Main agentic loop.
@@ -474,50 +485,90 @@ def run_agent_loop(
 
     print("OK: Sanity check passed - all tests passing\n")
 
-    results = []
-    for i, mutant_entry in enumerate(triage_results):
+    # Bulk pre-filter: check which mutants are already killed by existing tests
+    # This avoids wasting time on mutants the current test suite already handles
+    already_killed_results = []
+    remaining_triage = []
+
+    if mutation_engine == "mutahunter":
+        from .verifier import _verify_mutahunter_mutant
+        test_file_path = package_dir / "test_cat_finder.py"
+
+        print(f"Pre-filtering: checking {len(triage_results)} mutant(s) against existing tests...")
+        for entry in triage_results:
+            mid = entry.get("mutant_id", "unknown")
+            mfile = entry.get("mutant_file")
+            if mfile:
+                killed, _ = _verify_mutahunter_mutant(mid, mfile, test_file_path, package_dir)
+                if killed:
+                    already_killed_results.append({
+                        "mutant_id": mid,
+                        "status": "already_killed",
+                        "reason": "Killed by existing tests (pre-filter)",
+                    })
+                    logger.log_result(mid, "already_killed", "Killed by existing tests (pre-filter)")
+                    if phase_logger:
+                        phase_logger.log_prefilter(mid, True)
+                    continue
+            remaining_triage.append(entry)
+            if phase_logger:
+                phase_logger.log_prefilter(mid, False)
+
+        filtered = len(already_killed_results)
+        print(f"Pre-filter complete: {filtered} already killed, {len(remaining_triage)} remaining\n")
+        if phase_logger:
+            phase_logger.log_prefilter_summary(filtered, len(remaining_triage))
+
+        if remaining_triage == [] and filtered > 0:
+            print("WARNING: ALL mutants are already killed by existing tests.")
+            print("The mutant list is likely stale (generated from an older test suite).")
+            print("Re-run the full pipeline without --skip-mutation to generate fresh mutations.\n")
+    else:
+        remaining_triage = triage_results
+
+    results = list(already_killed_results)
+    tests_modified = False
+    tests_added_count = 0
+    for i, mutant_entry in enumerate(remaining_triage):
         mutant_id = mutant_entry.get("mutant_id", "unknown")
-        logger.log_mutant_start(mutant_id, i + 1, len(triage_results))
+        logger.log_mutant_start(mutant_id, i + 1, len(remaining_triage))
 
-        # Sanity check before each mutant: verify tests still pass
-        print(f"Sanity check: verifying all tests pass...")
-        tests_pass, test_output = check_tests_pass(package_dir)
+        # Sanity check only when tests were modified in a previous iteration
+        if tests_modified:
+            print(f"Sanity check: verifying all tests pass...")
+            tests_pass, test_output = check_tests_pass(package_dir)
 
-        if not tests_pass:
-            print(f"FAIL: Sanity check failed before processing {mutant_id}!")
-            print("Tests are broken, likely from a previous mutation.")
-            print("\nStopping to prevent further damage.")
-            results.append({
-                "mutant_id": mutant_id,
-                "status": "sanity_check_failed",
-                "reason": "Tests broken before processing this mutant",
-            })
-            break
+            if not tests_pass:
+                print(f"FAIL: Sanity check failed before processing {mutant_id}!")
+                print("Tests are broken, likely from a previous mutation.")
+                print("\nStopping to prevent further damage.")
+                results.append({
+                    "mutant_id": mutant_id,
+                    "status": "sanity_check_failed",
+                    "reason": "Tests broken before processing this mutant",
+                })
+                break
 
-        print(f"OK: All tests pass")
+            print(f"OK: All tests pass")
 
-        # Check if this mutant is already killed by existing tests
-        print(f"Checking if mutant is already killed by existing tests...")
+        # Re-check this mutant in case a test written earlier in this run now kills it
+        # Only worth checking if we've actually added new tests
         mutant_file_path = mutant_entry.get("mutant_file") if mutation_engine == "mutahunter" else None
 
-        if mutation_engine == "mutahunter" and mutant_file_path:
-            from .verifier import _verify_mutahunter_mutant
+        if mutation_engine == "mutahunter" and mutant_file_path and tests_added_count > 0:
             test_file_path = package_dir / "test_cat_finder.py"
-
-            # Run existing tests against this mutant
             already_killed, msg = _verify_mutahunter_mutant(
                 mutant_id, mutant_file_path, test_file_path, package_dir
             )
 
             if already_killed:
-                print(f"OK: Mutant already killed by existing tests - skipping")
-                print(f"  (A test from a previous mutant already kills this one)")
+                print(f"OK: Mutant now killed by a test written earlier in this run - skipping")
                 results.append({
                     "mutant_id": mutant_id,
                     "status": "already_killed",
-                    "reason": "Mutant already killed by existing tests (likely from previous mutation)",
+                    "reason": "Killed by test written earlier in this run",
                 })
-                logger.log_result(mutant_id, "already_killed", "Killed by previous test")
+                logger.log_result(mutant_id, "already_killed", "Killed by test written earlier in this run")
                 continue
 
         result = process_mutant(
@@ -528,8 +579,15 @@ def run_agent_loop(
             dry_run,
             logger=logger,
             mutation_engine=mutation_engine,
+            phase_logger=phase_logger,
         )
         results.append(result)
+
+        # Track whether tests were modified (for sanity check and re-verification)
+        if result["status"] in ("success", "verification_failed"):
+            tests_modified = True
+        if result["status"] == "success":
+            tests_added_count += 1
 
         # Log result
         logger.log_result(
@@ -577,5 +635,7 @@ def run_agent_loop(
 
     # Log summary
     logger.log_summary(summary)
+    if phase_logger:
+        phase_logger.log_summary(summary)
 
     return summary
