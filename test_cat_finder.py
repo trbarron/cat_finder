@@ -213,6 +213,24 @@ class TestParseClassificationResults(unittest.TestCase):
         # With softmax applied, the scores for all 3 classes should sum to 1.0
         self.assertAlmostEqual(total_score, 1.0, places=6)
 
+    def test_get_outputs_empty_list_raises_index_error(self):
+        """When imx500.get_outputs returns an empty list, the ORIGINAL code will
+        attempt to index np_outputs[0] and raise IndexError. The MUTANT would
+        incorrectly treat an empty list as missing outputs and return last_detections.
+        This test asserts the ORIGINAL behavior (raise IndexError) to kill the mutant.
+        """
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+
+        # Simulate get_outputs returning an empty list (no output tensors)
+        imx500.get_outputs.return_value = []
+
+        last = [Classification(0, 0.5)]
+        with self.assertRaises(IndexError):
+            parse_classification_results(imx500, request, intrinsics, last)
+
+
 class TestAddToDataDynamodb(unittest.TestCase):
     def test_correct_item_structure(self):
         table = MagicMock()
