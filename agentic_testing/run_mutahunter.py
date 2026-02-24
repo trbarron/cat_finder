@@ -85,7 +85,7 @@ if __name__ == "__main__":
     parser.add_argument("--source", required=True, help="Source file to mutate")
     parser.add_argument("--test", required=True, help="Test file")
     parser.add_argument("--test-command", required=True, help="Command to run tests")
-    parser.add_argument("--model", default="gpt-5-mini", help="LLM model")
+    parser.add_argument("--model", default="gpt-4o-mini", help="LLM model")
     parser.add_argument("--venv", type=Path, help="Path to venv (auto-detected if omitted)")
 
     args = parser.parse_args()
