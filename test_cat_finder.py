@@ -213,6 +213,41 @@ class TestParseClassificationResults(unittest.TestCase):
         # With softmax applied, the scores for all 3 classes should sum to 1.0
         self.assertAlmostEqual(total_score, 1.0, places=6)
 
+    def test_consecutive_match_confidence_stored_as_75(self):
+        """Ensure a detection with confidence just above 0.75 stores int(confidence*100)==75.
+
+        This verifies the original behavior where int(confidence * 100) is used (75).
+        The mutant adds 100 resulting in 175 which this test will catch.
+        """
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+        data_table = MagicMock()
+        url_table = MagicMock()
+        s3_client = MagicMock()
+        labels = ["neither", "checo", "tuni"]
+
+        # Bright image so darkness check passes
+        request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+        # Make the top class have confidence slightly above 0.75 such that int(confidence*100) == 75
+        output = np.array([[0.2499, 0.7501, 0.0]])
+        imx500.get_outputs.return_value = [output]
+
+        result = process_detection(
+            request, imx500, intrinsics,
+            data_table, url_table, s3_client,
+            labels, s3_bucket="bucket",
+            previous_label="checo", darkness_threshold=30
+        )
+        self.assertEqual(result, "checo")
+        # Confirm a DynamoDB write occurred
+        data_table.put_item.assert_called_once()
+        # Assert the stored confidence is 75 (original behavior), not 175 (mutant behavior)
+        item = data_table.put_item.call_args[1]['Item']
+        self.assertEqual(item['confidence'], 75)
+
+
 class TestAddToDataDynamodb(unittest.TestCase):
     def test_correct_item_structure(self):
         table = MagicMock()
