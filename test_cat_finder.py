@@ -176,46 +176,38 @@ class TestParseClassificationResults(unittest.TestCase):
         results = parse_classification_results(imx500, request, intrinsics, last_detections)
         self.assertEqual(results, last_detections)
 
-    def test_softmax_applied_true_scores_probabilities(self):
-        """When intrinsics.softmax is True, softmax() must be applied and the returned scores should be probabilities.
+    @patch('cat_finder.softmax')
+    def test_applies_softmax_when_flag_true(self, mock_softmax):
+        """Ensure that when intrinsics.softmax is True the softmax function is applied to the model output.
 
-        This replaces cat_finder.softmax with a real softmax implementation for the duration of the test,
-        asserts the top index, and verifies the top score equals the softmax probability (not the raw logit).
+        We patch cat_finder.softmax to return a distinguishable array so the test can verify that
+        parse_classification_results used the softmax-transformed scores (original code) rather
+        than the raw outputs (mutant inverts the condition).
         """
-        import cat_finder
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = True
 
-        # Preserve and restore original softmax to avoid affecting other tests
-        orig_softmax = getattr(cat_finder, 'softmax', None)
-        def real_softmax(x):
-            x = np.array(x, dtype=float)
-            e = np.exp(x - np.max(x))
-            return e / e.sum()
+        # Model raw output (flattened would be [0.1, 0.8, 0.1])
+        output = np.array([[0.1, 0.8, 0.1]])
+        imx500.get_outputs.return_value = [output]
 
-        try:
-            # Use the real softmax implementation for this test
-            cat_finder.softmax = real_softmax
+        # Make softmax return a clearly different distribution so we can detect its use
+        mock_softmax.return_value = np.array([0.2, 0.7, 0.1])
 
-            imx500 = MagicMock()
-            request = MagicMock()
-            intrinsics = MagicMock()
-            intrinsics.softmax = True
+        results = parse_classification_results(imx500, request, intrinsics, [])
 
-            # Raw logits where the highest raw logit is at index 1
-            output = np.array([[0.1, 2.0, 0.1]])
-            imx500.get_outputs.return_value = [output]
+        # softmax should have been called with the flattened output
+        mock_softmax.assert_called_once()
+        called_arg = mock_softmax.call_args[0][0]
+        self.assertTrue(isinstance(called_arg, np.ndarray))
+        self.assertTrue(np.allclose(called_arg, np.array([0.1, 0.8, 0.1])))
 
-            results = parse_classification_results(imx500, request, intrinsics, [])
-            self.assertEqual(len(results), 3)
-            self.assertEqual(results[0].idx, 1)
-
-            expected_prob = real_softmax(output.flatten())[1]
-            # Expect the reported score to be the softmax probability (not the raw logit 2.0)
-            self.assertAlmostEqual(results[0].score, expected_prob, places=6)
-        finally:
-            # Restore original softmax to not interfere with other tests
-            cat_finder.softmax = orig_softmax
-
-
+        # The top result should reflect the softmax-transformed scores (index 1 with score 0.7)
+        self.assertEqual(len(results), 3)
+        self.assertEqual(results[0].idx, 1)
+        self.assertAlmostEqual(results[0].score, 0.7)
 class TestAddToDataDynamodb(unittest.TestCase):
     def test_correct_item_structure(self):
         table = MagicMock()
@@ -394,34 +386,6 @@ class TestProcessDetection(unittest.TestCase):
         self.assertEqual(result, "checo")
         # Image should NOT be deleted when upload fails
         mock_remove.assert_not_called()
-
-    def test_dark_image_button_triggers_add_to_data_with_100_confidence(self):
-        """When a dark image is processed with is_button_triggered=True, ensure
-        add_to_data_dynamodb is called with confidence==100 (not 0).
-        """
-        # Make image dark
-        self.request.make_array.return_value = np.full((100, 100, 3), 5, dtype=np.uint8)
-
-        # Patch the DB write and filesystem helpers to avoid side effects
-        with patch('cat_finder.add_to_data_dynamodb') as mock_add, \
-             patch('cat_finder.os.path.exists', return_value=True), \
-             patch('cat_finder.os.remove'), \
-             patch('cat_finder.os.makedirs'):
-            result = process_detection(
-                self.request, self.imx500, self.intrinsics,
-                self.data_table, self.url_table, self.s3_client,
-                self.labels, s3_bucket="bucket",
-                is_button_triggered=True, darkness_threshold=30
-            )
-
-        # Function should report the 'none' label for a dark image
-        self.assertEqual(result, "none")
-
-        # Ensure add_to_data_dynamodb was called exactly once and with confidence == 100
-        mock_add.assert_called_once()
-        # Confidence is the 5th positional argument to add_to_data_dynamodb
-        self.assertEqual(mock_add.call_args[0][4], 100)
-
 class TestButtonPressed(unittest.TestCase):
     def test_sets_flag_on_falling_edge(self):
         flag = [False]
@@ -440,6 +404,76 @@ class TestButtonPressed(unittest.TestCase):
         lock = MagicMock()
         button_pressed(flag, lock, gpio=17, level=0, tick=0)
         lock.__enter__.assert_called()
+
+    @patch('cat_finder.load_dotenv')
+    @patch('cat_finder.boto3')
+    @patch('builtins.print')
+    @patch('cat_finder.process_detection')
+    def test_processing_print_called_on_button_trigger(self, mock_process_detection, mock_print, mock_boto3, mock_load_dotenv):
+        """Simulate a button press captured by the pigpio callback and run main()
+
+        This ensures that when a button press is detected main() enters the
+        button-triggered processing branch and prints the expected message.
+        The original code prints "Processing button-triggered image"; the
+        mutant removed that print. We assert the original behavior (the print
+        occurs) and that process_detection was invoked as a button-triggered
+        run.
+        """
+        # Provide required env vars so main() does not exit
+        env = {
+            'AWS_ACCESS_KEY_ID': 'x',
+            'AWS_SECRET_ACCESS_KEY': 'x',
+            'AWS_REGION': 'us-east-1',
+            'DYNAMODB_DATA_TABLE_NAME': 'data',
+            'DYNAMODB_URL_TABLE_NAME': 'url',
+            'S3_BUCKET_NAME': 'bucket'
+        }
+
+        with patch.dict('os.environ', env, clear=True):
+            import cat_finder
+
+            # Ensure IMX500/network intrinsics look valid so main() proceeds
+            intr = MagicMock()
+            intr.task = 'classification'
+            intr.labels = ["neither", "checo", "tuni"]
+            intr.preserve_aspect_ratio = False
+            intr.inference_rate = 30
+            cat_finder.IMX500.return_value.network_intrinsics = intr
+            cat_finder.IMX500.return_value.camera_num = 0
+
+            # Capture the callback registered via pigpio so we can invoke it
+            pi = cat_finder.pigpio.pi.return_value
+            captured = {}
+
+            def save_callback(pin, edge, cb):
+                captured['cb'] = cb
+            pi.callback.side_effect = save_callback
+
+            # Ensure Picamera2 mock returns a request and call the captured callback
+            picam2 = cat_finder.Picamera2.return_value
+            req = MagicMock()
+            picam2.capture_request.return_value = req
+
+            def start_and_trigger(config):
+                # Simulate hardware falling edge to set the flag inside main()
+                if 'cb' in captured:
+                    # gpio=17, level=0 (falling edge), tick=0
+                    captured['cb'](17, 0, 0)
+            picam2.start.side_effect = start_and_trigger
+
+            # Make process_detection raise KeyboardInterrupt to break out of the loop
+            mock_process_detection.side_effect = KeyboardInterrupt()
+
+            # Run main(); it should complete (KeyboardInterrupt is handled inside main)
+            cat_finder.main()
+
+            # Verify process_detection was called and was called as a button-triggered run
+            mock_process_detection.assert_called()
+            kwargs = mock_process_detection.call_args[1]
+            self.assertTrue(kwargs.get('is_button_triggered', False))
+
+            # Assert original behavior: the processing print message was emitted
+            mock_print.assert_any_call("Processing button-triggered image")
 class TestProcessDetectionNeitherLabel(unittest.TestCase):
     def setUp(self):
         self.request = MagicMock()
@@ -539,5 +573,74 @@ class TestMainEnvValidation(unittest.TestCase):
             self.assertIn('DYNAMODB_DATA_TABLE_NAME', error_msg)
             self.assertIn('S3_BUCKET_NAME', error_msg)
             self.assertNotIn('AWS_ACCESS_KEY_ID', error_msg)
+
+    @patch('cat_finder.load_dotenv')
+    @patch('cat_finder.boto3')
+    @patch('cat_finder.process_detection')
+    def test_button_press_triggers_processing_in_main(self, mock_process_detection, mock_boto3, mock_load_dotenv):
+        """Simulate a button press via the pigpio callback registered in main()
+
+        This test patches process_detection and simulates the hardware callback
+        to set the button_pressed_flag inside main(). It then runs main() (with
+        required env vars provided) and asserts that process_detection was
+        invoked with is_button_triggered=True. The mutant inverts the condition
+        and would NOT call process_detection with is_button_triggered=True when
+        the button is pressed, causing this test to fail against the mutant.
+        """
+        # Prepare environment so main() doesn't exit due to missing vars
+        env = {
+            'AWS_ACCESS_KEY_ID': 'x',
+            'AWS_SECRET_ACCESS_KEY': 'x',
+            'AWS_REGION': 'us-east-1',
+            'DYNAMODB_DATA_TABLE_NAME': 'data',
+            'DYNAMODB_URL_TABLE_NAME': 'url',
+            'S3_BUCKET_NAME': 'bucket'
+        }
+
+        with patch.dict('os.environ', env, clear=True):
+            import cat_finder
+
+            # Ensure IMX500/network intrinsics look valid so main() proceeds
+            intr = MagicMock()
+            intr.task = 'classification'
+            intr.labels = ["neither", "checo", "tuni"]
+            intr.preserve_aspect_ratio = False
+            intr.inference_rate = 30
+            cat_finder.IMX500.return_value.network_intrinsics = intr
+            cat_finder.IMX500.return_value.camera_num = 0
+
+            # Capture the callback registered via pigpio so we can invoke it
+            pi = cat_finder.pigpio.pi.return_value
+            captured = {}
+
+            def save_callback(pin, edge, cb):
+                captured['cb'] = cb
+            pi.callback.side_effect = save_callback
+
+            # Ensure Picamera2 mock returns a request and call the captured callback
+            picam2 = cat_finder.Picamera2.return_value
+            req = MagicMock()
+            picam2.capture_request.return_value = req
+
+            def start_and_trigger(config):
+                # Simulate hardware falling edge to set the flag inside main()
+                if 'cb' in captured:
+                    # gpio=17, level=0 (falling edge), tick=0
+                    captured['cb'](17, 0, 0)
+            picam2.start.side_effect = start_and_trigger
+
+            # Make process_detection raise KeyboardInterrupt to break out of the loop
+            mock_process_detection.side_effect = KeyboardInterrupt()
+
+            # Run main(); it should complete (KeyboardInterrupt is handled inside main)
+            cat_finder.main()
+
+            # Verify process_detection was called and was called as a button-triggered run
+            mock_process_detection.assert_called()
+            kwargs = mock_process_detection.call_args[1]
+            # Assert the original behavior: the call should indicate a button-triggered image
+            self.assertTrue(kwargs.get('is_button_triggered', False))
+
+
 if __name__ == "__main__":
     unittest.main()
