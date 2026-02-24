@@ -209,6 +209,39 @@ class TestParseClassificationResults(unittest.TestCase):
         results = parse_classification_results(imx500, request, intrinsics, last_detections)
         self.assertEqual(results, last_detections)
 
+    @patch('cat_finder.softmax')
+    def test_does_not_apply_softmax_when_flag_false(self, mock_softmax):
+        """Ensure softmax is NOT applied when intrinsics.softmax is False.
+
+        The original code only applies softmax when intrinsics.softmax is True.
+        This test patches the softmax function to a real (non-identity) implementation
+        and verifies it is not called and the raw logits are returned as scores.
+        """
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+
+        # Raw logits where the max is at index 2 (value 3.0)
+        output = np.array([[1.0, 2.0, 3.0]])
+        imx500.get_outputs.return_value = [output]
+
+        # Provide a real softmax implementation as the mock's side effect
+        def real_softmax(x):
+            e = np.exp(x - np.max(x))
+            return e / np.sum(e)
+        mock_softmax.side_effect = real_softmax
+
+        results = parse_classification_results(imx500, request, intrinsics, [])
+
+        # Original behavior: softmax should NOT be called when intrinsics.softmax is False
+        mock_softmax.assert_not_called()
+        self.assertEqual(len(results), 3)
+        # Top index should be 2 with raw score 3.0 (no softmax applied)
+        self.assertEqual(results[0].idx, 2)
+        self.assertAlmostEqual(results[0].score, 3.0)
+
+
 class TestAddToDataDynamodb(unittest.TestCase):
     def test_correct_item_structure(self):
         table = MagicMock()
