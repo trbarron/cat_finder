@@ -48,7 +48,8 @@ def _test_mutant_against_suite(
 
 
 def parse_mutahunter_results(
-    package_dir: Path, source_file: str = "cat_finder.py"
+    package_dir: Path, source_file: str = "cat_finder.py",
+    max_survived: int = 30, phase_logger=None,
 ) -> list[dict[str, Any]]:
     """
     Parse mutahunter results and extract survived mutants.
@@ -129,6 +130,14 @@ def parse_mutahunter_results(
         untested_survived = 0
 
         for i, mhash in enumerate(sorted(untested), 1):
+            # Early exit if we have enough survived mutants
+            if len(survived_mutants) >= max_survived:
+                skipped = len(untested) - i + 1
+                print(f"  Reached {max_survived} survived mutants, skipping remaining {skipped} untested")
+                if phase_logger:
+                    phase_logger.log_parsing(f"Early exit: {max_survived} survived reached, {skipped} untested skipped")
+                break
+
             # Find the mutant file for this hash
             matching = [f for f in mutant_files if f.stem.split("_")[0] == mhash]
             if not matching:
@@ -204,6 +213,14 @@ def parse_mutahunter_results(
     if syntax_errors:
         print(f"  Syntax errors: {syntax_errors} (deleted)")
     print(f"Returning {len(mutant_entries)} survived mutant(s) for triage")
+
+    if phase_logger:
+        phase_logger.log_parsing(f"Total mutant files: {len(mutant_files)}")
+        phase_logger.log_parsing(f"Survived: {len(survived_mutants)}, Killed: {len(killed_mutants)}")
+        if syntax_errors:
+            phase_logger.log_parsing(f"Syntax errors: {syntax_errors} (deleted)")
+        phase_logger.log_parsing(f"Returning {len(mutant_entries)} survived mutant(s) for triage")
+
     return mutant_entries
 
 

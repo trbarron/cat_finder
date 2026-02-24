@@ -8,8 +8,8 @@ import urllib.request
 from pathlib import Path
 
 
-LLM_MODEL = "gpt-5-mini"
-LLM_TEMPERATURE = 1  # gpt-5-mini only supports temperature=1
+LLM_MODEL = "gpt-4o-mini"
+LLM_TEMPERATURE = 1
 LLM_API_URL = "https://api.openai.com/v1/chat/completions"
 
 
@@ -89,7 +89,11 @@ Common issues to fix:
    - RIGHT: Call the function directly and mock its dependencies instead
    - RIGHT: Or test via the code path that calls the function through the module
 
-8. **Stdlib imports (threading, uuid, datetime, etc.) ARE allowed inside test methods.**
+8. **Import rules inside test methods:**
+   - Stdlib imports (threading, uuid, datetime, etc.) ARE allowed inside test methods.
+   - `import cat_finder` (bare import) is allowed -- use `cat_finder.main()`, `cat_finder.DARKNESS_THRESHOLD`, etc.
+   - `from cat_finder import ...` is STRICTLY FORBIDDEN inside test methods. This WILL be rejected by the test applier.
+   - If you need main(), use: `import cat_finder` then `cat_finder.main()` -- NEVER `from cat_finder import main`.
 
 
 9. **NEVER use source inspection as a fix strategy:**
@@ -106,9 +110,10 @@ Common issues to fix:
     - Focus on the EXACT boundary the mutant changes and pick an input that sits on that boundary
     - Example: testing empty strings vs None for a falsy check covers the same branch -- find a different approach
 
-12. **Prefer direct function tests over main() integration tests:**
-    - If the current test calls main() with complex mocking and keeps failing, consider rewriting to test the specific function directly
-    - main() tests are fragile due to setup complexity -- test the function where the mutation actually occurs
+12. **NEVER test main() -- test helper functions directly instead:**
+    - If the current test calls main() with complex mocking and keeps failing, REWRITE it to test the specific helper function directly
+    - main() requires FakePi, pigpio, Picamera2, IMX500, camera, boto3, and many more mocks -- these tests ALWAYS fail
+    - If the test currently calls main(), replace it with a direct test of the affected helper function (process_detection, is_image_too_dark, button_pressed, etc.)
 
 13. **Don't assert on print output or guess kwargs:**
     - Don't use `mock_print.assert_any_call(...)` as the primary assertion

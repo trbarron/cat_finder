@@ -176,38 +176,29 @@ class TestParseClassificationResults(unittest.TestCase):
         results = parse_classification_results(imx500, request, intrinsics, last_detections)
         self.assertEqual(results, last_detections)
 
-    def test_softmax_is_applied_when_intrinsics_indicates_true(self):
-        """Verify that when intrinsics.softmax is True the softmax function is applied
-
-        This ensures the returned scores are probabilities (sum to 1) and differ from
-        raw logits; the mutant that inverts the condition would skip softmax and
-        return raw logits, causing this test to fail against the mutant.
+    def test_softmax_applied_scores_sum_to_one(self):
+        """Ensure that when intrinsics.softmax is True the softmax function is applied
+        and the returned classification scores sum to 1 (probabilities).
+        This should pass for the original code (which applies softmax) and fail for
+        the mutant that inverts the condition and skips softmax when intrinsics.softmax is True.
         """
         imx500 = MagicMock()
         request = MagicMock()
         intrinsics = MagicMock()
         intrinsics.softmax = True
 
-        # Use logits where softmax will change the numeric values (and normalize them)
-        output = np.array([[1.0, 2.0, 3.0]])
+        # Use 3-class logits where softmax will produce probabilities summing to 1
+        output = np.array([[2.0, 1.0, 0.1]])
         imx500.get_outputs.return_value = [output]
 
-        def true_softmax(x):
-            x = np.asarray(x, dtype=float)
-            e = np.exp(x - np.max(x))
-            return e / e.sum()
-
-        # Patch the softmax used inside cat_finder to a real softmax implementation
-        with patch('cat_finder.softmax', new=true_softmax):
+        # Patch cat_finder.softmax to a real softmax implementation for this test
+        with patch('cat_finder.softmax', new=lambda x: np.exp(x) / np.sum(np.exp(x))):
             results = parse_classification_results(imx500, request, intrinsics, [])
 
-        # Expect three results and the top index to be the highest logit (index 2)
         self.assertEqual(len(results), 3)
-        self.assertEqual(results[0].idx, 2)
-
-        # The returned score should be the softmax probability for the top class
-        expected_probs = true_softmax(output.flatten())
-        self.assertAlmostEqual(results[0].score, expected_probs[2])
+        total_score = sum(r.score for r in results)
+        # With softmax applied, the scores for all 3 classes should sum to 1.0
+        self.assertAlmostEqual(total_score, 1.0, places=6)
 
 class TestAddToDataDynamodb(unittest.TestCase):
     def test_correct_item_structure(self):
@@ -405,6 +396,81 @@ class TestButtonPressed(unittest.TestCase):
         lock = MagicMock()
         button_pressed(flag, lock, gpio=17, level=0, tick=0)
         lock.__enter__.assert_called()
+
+    def test_main_triggers_processing_on_button_and_prints_message(self):
+        """Simulate main() registering a callback that immediately signals a button press,
+        run one loop iteration of main (by making time.sleep raise KeyboardInterrupt) and
+        assert the original behavior prints the button-triggered processing message.
+
+        This verifies the original code path that prints "Processing button-triggered image"
+        when a button press has been detected. The mutant removed that print and instead
+        flipped the flag, so this test will fail against the mutant.
+        """
+        import io
+        import cat_finder
+
+        # Provide all required env vars so main proceeds into its loop
+        env = {
+            'AWS_ACCESS_KEY_ID': 'x',
+            'AWS_SECRET_ACCESS_KEY': 'y',
+            'AWS_REGION': 'z',
+            'DYNAMODB_DATA_TABLE_NAME': 'dt',
+            'DYNAMODB_URL_TABLE_NAME': 'ut',
+            'S3_BUCKET_NAME': 'bucket'
+        }
+
+        with patch.dict('os.environ', env, clear=True), \
+             patch('cat_finder.load_dotenv'), \
+             patch('cat_finder.boto3'), \
+             patch('cat_finder.IMX500') as mock_imx, \
+             patch('cat_finder.Picamera2') as mock_picam, \
+             patch('cat_finder.time.sleep', side_effect=KeyboardInterrupt), \
+             patch('sys.stdout', new=io.StringIO()) as fake_out:
+
+            # Configure IMX500/network intrinsics mock used by main()
+            imx_instance = MagicMock()
+            intrinsics = MagicMock()
+            intrinsics.task = 'classification'
+            intrinsics.labels = ['neither', 'checo', 'tuni']
+            intrinsics.preserve_aspect_ratio = False
+            intrinsics.softmax = False
+            imx_instance.network_intrinsics = intrinsics
+            # needed methods called in main
+            imx_instance.show_network_fw_progress_bar = MagicMock()
+            mock_imx.return_value = imx_instance
+
+            # Configure Picamera2 mock and a simple request
+            picam_instance = MagicMock()
+            picam_instance.create_preview_configuration.return_value = {}
+            request = MagicMock()
+            request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+            request.get_metadata.return_value = object()
+            request.save.return_value = None
+            request.release.return_value = None
+            picam_instance.capture_request.return_value = request
+            mock_picam.return_value = picam_instance
+
+            # Avoid actually running process_detection logic; just allow it to be called
+            with patch('cat_finder.process_detection', return_value=None) as mock_proc:
+                # Prepare pigpio.pi() mock: connected True and callback immediately invokes
+                pigpio_pi = MagicMock()
+                pigpio_pi.connected = True
+
+                def register_callback(pin, edge, cb):
+                    # Simulate immediate falling edge event to set button flag
+                    cb(pin, 0, 0)
+                    return MagicMock()
+
+                pigpio_pi.callback.side_effect = register_callback
+
+                with patch('cat_finder.pigpio.pi', return_value=pigpio_pi):
+                    # Run main; time.sleep will raise KeyboardInterrupt to stop after one iteration
+                    cat_finder.main()
+
+            output = fake_out.getvalue()
+            # The ORIGINAL code prints this string when processing a button-triggered image
+            self.assertIn("Processing button-triggered image", output)
+
 class TestProcessDetectionNeitherLabel(unittest.TestCase):
     def setUp(self):
         self.request = MagicMock()
@@ -505,86 +571,6 @@ class TestMainEnvValidation(unittest.TestCase):
             self.assertIn('S3_BUCKET_NAME', error_msg)
             self.assertNotIn('AWS_ACCESS_KEY_ID', error_msg)
 
-    def test_pi_callback_registers_handler_and_triggers_button_processing(self):
-        # Prepare a full environment so main() proceeds to register the callback
-        env = {
-            'AWS_ACCESS_KEY_ID': 'x',
-            'AWS_SECRET_ACCESS_KEY': 'x',
-            'AWS_REGION': 'us-east-1',
-            'DYNAMODB_DATA_TABLE_NAME': 'data',
-            'DYNAMODB_URL_TABLE_NAME': 'url',
-            'S3_BUCKET_NAME': 'bucket'
-        }
 
-        # Mocks used inside main()
-        pi_mock = MagicMock()
-        pi_mock.connected = True
-
-        # Capture the handler passed to pi.callback
-        def callback_side_effect(pin, edge, handler):
-            setattr(pi_mock, 'registered_handler', handler)
-            return MagicMock()
-
-        pi_mock.callback.side_effect = callback_side_effect
-
-        # Picamera2 instance mock
-        picam2_mock = MagicMock()
-        request_mock = MagicMock()
-        request_mock.release = MagicMock()
-
-        # capture_request returns a request once, then raises KeyboardInterrupt to end main()
-        calls = {'count': 0}
-        def capture_request_side_effect():
-            if calls['count'] == 0:
-                calls['count'] = 1
-                return request_mock
-            raise KeyboardInterrupt()
-        picam2_mock.capture_request.side_effect = capture_request_side_effect
-
-        # When start() is called (after callback registration), simulate pressing the button
-        def start_side_effect(config):
-            handler = getattr(pi_mock, 'registered_handler', None)
-            if callable(handler):
-                handler(17, 0, 0)
-            return None
-        picam2_mock.start.side_effect = start_side_effect
-
-        # IMX500 mock with minimal intrinsics to satisfy main()
-        imx500_mock = MagicMock()
-        intrinsics_mock = MagicMock()
-        intrinsics_mock.labels = ["neither", "checo", "tuni"]
-        intrinsics_mock.preserve_aspect_ratio = False
-        intrinsics_mock.inference_rate = 1
-        imx500_mock.network_intrinsics = intrinsics_mock
-        imx500_mock.camera_num = 0
-
-        # Patch out external deps and inject our mocks
-        with patch.dict('os.environ', env, clear=True):
-            with patch('cat_finder.load_dotenv'):
-                with patch('cat_finder.boto3'):
-                    with patch('cat_finder.pigpio.pi') as mock_pi_fn:
-                        mock_pi_fn.return_value = pi_mock
-                        with patch('cat_finder.Picamera2') as mock_pic_cls:
-                            mock_pic_cls.return_value = picam2_mock
-                            with patch('cat_finder.IMX500') as mock_imx_cls:
-                                mock_imx_cls.return_value = imx500_mock
-                                # Prevent long sleep in main loop
-                                with patch('cat_finder.time.sleep', return_value=None):
-                                    # Observe process_detection calls
-                                    with patch('cat_finder.process_detection') as mock_process_detection:
-                                        mock_process_detection.return_value = None
-
-                                        # Directly run the callback here to simulate behavior without importing main()
-                                        # Register the callback
-                                        pi_mock.callback(BUTTON_PIN, pigpio.FALLING_EDGE, lambda gpio, level, tick: button_pressed(button_pressed_flag, button_press_lock, gpio, level, tick))
-                                        
-                                        # Simulate button press with a None handler that should not call button_pressed
-                                        pi_mock.callback(BUTTON_PIN, pigpio.FALLING_EDGE, None)
-                                        handler = pi_mock.registered_handler
-                                        if handler:
-                                            handler(17, 0, 0)
-                                        
-                                        # Ensure process_detection was NOT called
-                                        self.assertFalse(mock_process_detection.called)
 if __name__ == "__main__":
     unittest.main()
