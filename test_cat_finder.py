@@ -81,6 +81,18 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
         self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
 
+    def test_average_brightness_20_is_too_dark(self):
+        """Test that an image with average brightness 20 is considered too dark.
+
+        The original implementation computes avg_brightness = np.mean(arr) so 20 < 30 -> True.
+        The mutant adds a +10 bias (making it 30), which would incorrectly be considered not dark.
+        This test ensures the original behavior (True) and will fail against the mutant.
+        """
+        request = MagicMock()
+        # Create an image with mean brightness exactly 20
+        request.make_array.return_value = np.full((100, 100, 3), 20, dtype=np.uint8)
+        self.assertTrue(is_image_too_dark(request, darkness_threshold=30))
+
 
 class TestParseClassificationResults(unittest.TestCase):
     def test_valid_output(self):
@@ -378,6 +390,34 @@ class TestProcessDetection(unittest.TestCase):
         self.assertEqual(result, "checo")
         # Image should NOT be deleted when upload fails
         mock_remove.assert_not_called()
+
+    def test_consecutive_match_confidence_value(self):
+        """Ensure that a consecutive detection with confidence 0.85 is logged with confidence 85
+
+        This verifies the original behavior int(confidence * 100) -> 85. The mutant adds 100
+        yielding 185 which this test will catch.
+        """
+        # Bright image to avoid darkness branch
+        self.request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+        # Model returns 0.85 confidence for "checo" (index 1)
+        output = np.array([[0.05, 0.85, 0.10]])
+        self.imx500.get_outputs.return_value = [output]
+
+        result = process_detection(
+            self.request, self.imx500, self.intrinsics,
+            self.data_table, self.url_table, self.s3_client,
+            self.labels, s3_bucket="bucket",
+            previous_label="checo", darkness_threshold=30
+        )
+
+        # Should return the label
+        self.assertEqual(result, "checo")
+        # Ensure DynamoDB write occurred
+        self.data_table.put_item.assert_called_once()
+        # Verify the confidence stored is int(0.85 * 100) == 85 (original behavior)
+        item = self.data_table.put_item.call_args[1]['Item']
+        self.assertEqual(item['confidence'], 85)
+
 class TestButtonPressed(unittest.TestCase):
     def test_sets_flag_on_falling_edge(self):
         flag = [False]
