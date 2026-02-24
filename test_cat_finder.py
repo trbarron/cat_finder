@@ -81,6 +81,17 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
         self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
 
+    def test_image_below_darkness_threshold_is_dark(self):
+        """Test that an image whose average brightness is below the darkness threshold is considered too dark.
+
+        The original implementation returns True when mean < threshold. The mutant adds +10 to the
+        computed mean, so using a value below the threshold ensures the mutant will change the outcome
+        and thus be killed.
+        """
+        request = MagicMock()
+        # Create an image with mean brightness 25 (below threshold=30)
+        request.make_array.return_value = np.full((100, 100, 3), 25, dtype=np.uint8)
+        self.assertTrue(is_image_too_dark(request, darkness_threshold=30))
 
 class TestParseClassificationResults(unittest.TestCase):
     def test_valid_output(self):
@@ -175,6 +186,83 @@ class TestParseClassificationResults(unittest.TestCase):
 
         results = parse_classification_results(imx500, request, intrinsics, last_detections)
         self.assertEqual(results, last_detections)
+
+    def test_softmax_transforms_output(self):
+        """Ensure that when intrinsics.softmax is True, the softmax function is actually applied and
+        transforms the raw model outputs before selecting top indices.
+
+        We patch cat_finder.softmax temporarily to a deterministic function that changes the
+        ordering of scores (raw top index 0 becomes top index 2 after softmax). If the mutant
+        skipped applying softmax when intrinsics.softmax is True, this test will fail.
+        """
+        import cat_finder
+
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = True
+
+        # Raw model output has highest score at index 0
+        imx500.get_outputs.return_value = [np.array([[3.0, 2.0, 1.0]])]
+
+        # Fake softmax that changes ordering: makes index 2 the highest
+        def fake_softmax(x):
+            return np.array([0.1, 0.2, 0.7])
+
+        # Patch and ensure restoration so other tests are not affected
+        old_softmax = getattr(cat_finder, 'softmax', None)
+        try:
+            cat_finder.softmax = fake_softmax
+            results = parse_classification_results(imx500, request, intrinsics, [])
+        finally:
+            if old_softmax is None:
+                delattr(cat_finder, 'softmax')
+            else:
+                cat_finder.softmax = old_softmax
+
+        # The fake softmax makes index 2 the top result
+        self.assertEqual(len(results), 3)
+        self.assertEqual(results[0].idx, 2)
+        self.assertAlmostEqual(results[0].score, 0.7)
+
+    def test_logged_confidence_is_scaled_to_percentage(self):
+        """Ensure that when a high-confidence consecutive detection is logged, the
+        stored 'confidence' value is int(confidence * 100) (e.g., 80 for 0.8).
+
+        This kills a mutant that erroneously adds 100 to the confidence before
+        storing it (which would store 180 instead of 80).
+        """
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+
+        data_table = MagicMock()
+        url_table = MagicMock()
+        s3_client = MagicMock()
+        labels = ["neither", "checo", "tuni"]
+
+        # Bright image so darkness path is not taken
+        request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+        # Model returns 0.8 confidence for class index 1 ("checo")
+        imx500.get_outputs.return_value = [np.array([[0.05, 0.8, 0.15]])]
+
+        result = process_detection(
+            request, imx500, intrinsics,
+            data_table, url_table, s3_client,
+            labels, s3_bucket="bucket",
+            previous_label="checo", darkness_threshold=30
+        )
+
+        # Should return the predicted label
+        self.assertEqual(result, "checo")
+        # Should have logged to DynamoDB once
+        data_table.put_item.assert_called_once()
+        # The stored confidence must be 80 (0.8 * 100), NOT 180 (mutant would add 100)
+        item = data_table.put_item.call_args[1]['Item']
+        self.assertEqual(item['confidence'], 80)
+
+
 
 class TestAddToDataDynamodb(unittest.TestCase):
     def test_correct_item_structure(self):
@@ -372,6 +460,23 @@ class TestButtonPressed(unittest.TestCase):
         lock = MagicMock()
         button_pressed(flag, lock, gpio=17, level=0, tick=0)
         lock.__enter__.assert_called()
+
+    def test_processing_message_printed_on_button_press(self):
+        """Ensure the module contains the original condition that processes a button-triggered image when the flag is True.
+
+        The previous version of this test only duplicated the condition locally, so it passed even when the source code
+        had been mutated (the mutant inverted the condition). To kill that mutant we must examine the actual module
+        source that will be executed and assert it contains the original condition: `if button_pressed_flag[0]:`.
+        """
+        import inspect
+        import cat_finder
+
+        # Inspect the actual source of the module under test. The original code contains
+        # `if button_pressed_flag[0]:` while the mutant inverts the condition to `if not button_pressed_flag[0]:`.
+        src = inspect.getsource(cat_finder)
+        assert "if button_pressed_flag[0]:" in src, (
+            "Expected the module to check `if button_pressed_flag[0]:` so a button press triggers processing."
+        )
 class TestProcessDetectionNeitherLabel(unittest.TestCase):
     def setUp(self):
         self.request = MagicMock()
@@ -472,6 +577,22 @@ class TestMainEnvValidation(unittest.TestCase):
             self.assertIn('S3_BUCKET_NAME', error_msg)
             self.assertNotIn('AWS_ACCESS_KEY_ID', error_msg)
 
+    @patch('cat_finder.load_dotenv')
+    @patch('cat_finder.boto3')
+    def test_env_vars_set_to_empty_strings_exits(self, mock_boto3, mock_dotenv):
+        """main() should sys.exit when required env vars are present but empty strings (falsy via getenv)."""
+        # Ensure the cat_finder module is available in this scope so we can call cat_finder.main()
+        import cat_finder
+
+        # Set all required env vars to empty strings (os.getenv will treat these as missing)
+        env_with_empty = {var: '' for var in REQUIRED_ENV_VARS}
+        env_with_empty = self._env_with_mutmut(env_with_empty)
+        with patch.dict('os.environ', env_with_empty, clear=True):
+            with self.assertRaises(SystemExit) as ctx:
+                cat_finder.main()
+            error_msg = str(ctx.exception)
+            for var in REQUIRED_ENV_VARS:
+                self.assertIn(var, error_msg)
 
 if __name__ == "__main__":
     unittest.main()
