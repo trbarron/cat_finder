@@ -81,18 +81,27 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
         self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
 
-    def test_default_threshold_treats_equal_brightness_as_not_dark(self):
-        """Test that calling is_image_too_dark() without specifying darkness_threshold
-        uses the default (30) and an image with mean brightness == 30 is NOT considered too dark.
+    def test_make_array_called_with_main(self):
+        """Ensure is_image_too_dark calls request.make_array with the string "main" and
+        returns False for a bright image. The mock returns a bright array when called with
+        "main" and a dark array when called with None to distinguish the original from
+        the mutant that would call make_array(None).
         """
         request = MagicMock()
-        # Create an image with mean brightness equal to the default threshold (30)
-        request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
-        # Rely on the function's default darkness_threshold argument (do not pass it)
-        self.assertFalse(is_image_too_dark(request))
 
+        # Return a bright image when called with "main", but a dark image when called with None.
+        def make_array(arg):
+            if arg is None:
+                return np.full((10, 10, 3), 5, dtype=np.uint8)   # dark
+            if arg == "main":
+                return np.full((10, 10, 3), 150, dtype=np.uint8) # bright
+            return np.full((10, 10, 3), 150, dtype=np.uint8)
 
+        request.make_array.side_effect = make_array
 
+        # Original behavior: calls make_array("main") and returns False (not too dark)
+        self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
+        request.make_array.assert_called_once_with("main")
 class TestParseClassificationResults(unittest.TestCase):
     def test_valid_output(self):
         imx500 = MagicMock()
