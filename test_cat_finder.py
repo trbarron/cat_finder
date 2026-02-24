@@ -176,30 +176,44 @@ class TestParseClassificationResults(unittest.TestCase):
         results = parse_classification_results(imx500, request, intrinsics, last_detections)
         self.assertEqual(results, last_detections)
 
-    @patch('cat_finder.softmax')
-    def test_softmax_applied_transforms_output(self, mock_softmax):
-        """Ensure that when intrinsics.softmax is True the softmax function is applied to the model output.
+    def test_softmax_applied_true_scores_probabilities(self):
+        """When intrinsics.softmax is True, softmax() must be applied and the returned scores should be probabilities.
 
-        We patch cat_finder.softmax to return a clearly different distribution so the test will fail
-        if the implementation skips calling softmax (the mutant inverts the condition and would skip it).
+        This replaces cat_finder.softmax with a real softmax implementation for the duration of the test,
+        asserts the top index, and verifies the top score equals the softmax probability (not the raw logit).
         """
-        imx500 = MagicMock()
-        request = MagicMock()
-        intrinsics = MagicMock()
-        intrinsics.softmax = True
+        import cat_finder
 
-        # Model raw output (before softmax)
-        output = np.array([[0.1, 0.8, 0.1]])
-        imx500.get_outputs.return_value = [output]
+        # Preserve and restore original softmax to avoid affecting other tests
+        orig_softmax = getattr(cat_finder, 'softmax', None)
+        def real_softmax(x):
+            x = np.array(x, dtype=float)
+            e = np.exp(x - np.max(x))
+            return e / e.sum()
 
-        # Make softmax produce a distinct result so we can detect whether it was called
-        mock_softmax.return_value = np.array([0.0, 1.0, 0.0])
+        try:
+            # Use the real softmax implementation for this test
+            cat_finder.softmax = real_softmax
 
-        results = parse_classification_results(imx500, request, intrinsics, [])
-        self.assertEqual(len(results), 3)
-        self.assertEqual(results[0].idx, 1)
-        # Expect the transformed (softmax) score of 1.0; mutant that skips softmax would yield 0.8 here
-        self.assertAlmostEqual(results[0].score, 1.0)
+            imx500 = MagicMock()
+            request = MagicMock()
+            intrinsics = MagicMock()
+            intrinsics.softmax = True
+
+            # Raw logits where the highest raw logit is at index 1
+            output = np.array([[0.1, 2.0, 0.1]])
+            imx500.get_outputs.return_value = [output]
+
+            results = parse_classification_results(imx500, request, intrinsics, [])
+            self.assertEqual(len(results), 3)
+            self.assertEqual(results[0].idx, 1)
+
+            expected_prob = real_softmax(output.flatten())[1]
+            # Expect the reported score to be the softmax probability (not the raw logit 2.0)
+            self.assertAlmostEqual(results[0].score, expected_prob, places=6)
+        finally:
+            # Restore original softmax to not interfere with other tests
+            cat_finder.softmax = orig_softmax
 
 
 class TestAddToDataDynamodb(unittest.TestCase):
@@ -380,6 +394,34 @@ class TestProcessDetection(unittest.TestCase):
         self.assertEqual(result, "checo")
         # Image should NOT be deleted when upload fails
         mock_remove.assert_not_called()
+
+    def test_dark_image_button_triggers_add_to_data_with_100_confidence(self):
+        """When a dark image is processed with is_button_triggered=True, ensure
+        add_to_data_dynamodb is called with confidence==100 (not 0).
+        """
+        # Make image dark
+        self.request.make_array.return_value = np.full((100, 100, 3), 5, dtype=np.uint8)
+
+        # Patch the DB write and filesystem helpers to avoid side effects
+        with patch('cat_finder.add_to_data_dynamodb') as mock_add, \
+             patch('cat_finder.os.path.exists', return_value=True), \
+             patch('cat_finder.os.remove'), \
+             patch('cat_finder.os.makedirs'):
+            result = process_detection(
+                self.request, self.imx500, self.intrinsics,
+                self.data_table, self.url_table, self.s3_client,
+                self.labels, s3_bucket="bucket",
+                is_button_triggered=True, darkness_threshold=30
+            )
+
+        # Function should report the 'none' label for a dark image
+        self.assertEqual(result, "none")
+
+        # Ensure add_to_data_dynamodb was called exactly once and with confidence == 100
+        mock_add.assert_called_once()
+        # Confidence is the 5th positional argument to add_to_data_dynamodb
+        self.assertEqual(mock_add.call_args[0][4], 100)
+
 class TestButtonPressed(unittest.TestCase):
     def test_sets_flag_on_falling_edge(self):
         flag = [False]
@@ -497,7 +539,5 @@ class TestMainEnvValidation(unittest.TestCase):
             self.assertIn('DYNAMODB_DATA_TABLE_NAME', error_msg)
             self.assertIn('S3_BUCKET_NAME', error_msg)
             self.assertNotIn('AWS_ACCESS_KEY_ID', error_msg)
-
-
 if __name__ == "__main__":
     unittest.main()
