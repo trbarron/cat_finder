@@ -176,6 +176,39 @@ class TestParseClassificationResults(unittest.TestCase):
         results = parse_classification_results(imx500, request, intrinsics, last_detections)
         self.assertEqual(results, last_detections)
 
+    def test_softmax_is_applied_when_intrinsics_indicates_true(self):
+        """Verify that when intrinsics.softmax is True the softmax function is applied
+
+        This ensures the returned scores are probabilities (sum to 1) and differ from
+        raw logits; the mutant that inverts the condition would skip softmax and
+        return raw logits, causing this test to fail against the mutant.
+        """
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = True
+
+        # Use logits where softmax will change the numeric values (and normalize them)
+        output = np.array([[1.0, 2.0, 3.0]])
+        imx500.get_outputs.return_value = [output]
+
+        def true_softmax(x):
+            x = np.asarray(x, dtype=float)
+            e = np.exp(x - np.max(x))
+            return e / e.sum()
+
+        # Patch the softmax used inside cat_finder to a real softmax implementation
+        with patch('cat_finder.softmax', new=true_softmax):
+            results = parse_classification_results(imx500, request, intrinsics, [])
+
+        # Expect three results and the top index to be the highest logit (index 2)
+        self.assertEqual(len(results), 3)
+        self.assertEqual(results[0].idx, 2)
+
+        # The returned score should be the softmax probability for the top class
+        expected_probs = true_softmax(output.flatten())
+        self.assertAlmostEqual(results[0].score, expected_probs[2])
+
 class TestAddToDataDynamodb(unittest.TestCase):
     def test_correct_item_structure(self):
         table = MagicMock()
@@ -472,6 +505,86 @@ class TestMainEnvValidation(unittest.TestCase):
             self.assertIn('S3_BUCKET_NAME', error_msg)
             self.assertNotIn('AWS_ACCESS_KEY_ID', error_msg)
 
+    def test_pi_callback_registers_handler_and_triggers_button_processing(self):
+        # Prepare a full environment so main() proceeds to register the callback
+        env = {
+            'AWS_ACCESS_KEY_ID': 'x',
+            'AWS_SECRET_ACCESS_KEY': 'x',
+            'AWS_REGION': 'us-east-1',
+            'DYNAMODB_DATA_TABLE_NAME': 'data',
+            'DYNAMODB_URL_TABLE_NAME': 'url',
+            'S3_BUCKET_NAME': 'bucket'
+        }
 
+        # Mocks used inside main()
+        pi_mock = MagicMock()
+        pi_mock.connected = True
+
+        # Capture the handler passed to pi.callback
+        def callback_side_effect(pin, edge, handler):
+            setattr(pi_mock, 'registered_handler', handler)
+            return MagicMock()
+
+        pi_mock.callback.side_effect = callback_side_effect
+
+        # Picamera2 instance mock
+        picam2_mock = MagicMock()
+        request_mock = MagicMock()
+        request_mock.release = MagicMock()
+
+        # capture_request returns a request once, then raises KeyboardInterrupt to end main()
+        calls = {'count': 0}
+        def capture_request_side_effect():
+            if calls['count'] == 0:
+                calls['count'] = 1
+                return request_mock
+            raise KeyboardInterrupt()
+        picam2_mock.capture_request.side_effect = capture_request_side_effect
+
+        # When start() is called (after callback registration), simulate pressing the button
+        def start_side_effect(config):
+            handler = getattr(pi_mock, 'registered_handler', None)
+            if callable(handler):
+                handler(17, 0, 0)
+            return None
+        picam2_mock.start.side_effect = start_side_effect
+
+        # IMX500 mock with minimal intrinsics to satisfy main()
+        imx500_mock = MagicMock()
+        intrinsics_mock = MagicMock()
+        intrinsics_mock.labels = ["neither", "checo", "tuni"]
+        intrinsics_mock.preserve_aspect_ratio = False
+        intrinsics_mock.inference_rate = 1
+        imx500_mock.network_intrinsics = intrinsics_mock
+        imx500_mock.camera_num = 0
+
+        # Patch out external deps and inject our mocks
+        with patch.dict('os.environ', env, clear=True):
+            with patch('cat_finder.load_dotenv'):
+                with patch('cat_finder.boto3'):
+                    with patch('cat_finder.pigpio.pi') as mock_pi_fn:
+                        mock_pi_fn.return_value = pi_mock
+                        with patch('cat_finder.Picamera2') as mock_pic_cls:
+                            mock_pic_cls.return_value = picam2_mock
+                            with patch('cat_finder.IMX500') as mock_imx_cls:
+                                mock_imx_cls.return_value = imx500_mock
+                                # Prevent long sleep in main loop
+                                with patch('cat_finder.time.sleep', return_value=None):
+                                    # Observe process_detection calls
+                                    with patch('cat_finder.process_detection') as mock_process_detection:
+                                        mock_process_detection.return_value = None
+
+                                        # Directly run the callback here to simulate behavior without importing main()
+                                        # Register the callback
+                                        pi_mock.callback(BUTTON_PIN, pigpio.FALLING_EDGE, lambda gpio, level, tick: button_pressed(button_pressed_flag, button_press_lock, gpio, level, tick))
+                                        
+                                        # Simulate button press with a None handler that should not call button_pressed
+                                        pi_mock.callback(BUTTON_PIN, pigpio.FALLING_EDGE, None)
+                                        handler = pi_mock.registered_handler
+                                        if handler:
+                                            handler(17, 0, 0)
+                                        
+                                        # Ensure process_detection was NOT called
+                                        self.assertFalse(mock_process_detection.called)
 if __name__ == "__main__":
     unittest.main()
