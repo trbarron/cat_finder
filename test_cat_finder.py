@@ -81,6 +81,17 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
         self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
 
+    def test_image_just_below_threshold_considered_dark(self):
+        """Test that an image with average brightness slightly below the threshold is
+        considered too dark by the original implementation. This will fail for the
+        mutant that adds +10 to the computed average brightness.
+        """
+        request = MagicMock()
+        # Choose a mean brightness in [darkness_threshold - 10, darkness_threshold)
+        # e.g., 25 with threshold 30: original -> 25 < 30 == True; mutant -> 35 < 30 == False
+        request.make_array.return_value = np.full((100, 100, 3), 25, dtype=np.uint8)
+        self.assertTrue(is_image_too_dark(request, darkness_threshold=30))
+
 
 class TestParseClassificationResults(unittest.TestCase):
     def test_valid_output(self):
@@ -378,6 +389,33 @@ class TestProcessDetection(unittest.TestCase):
         self.assertEqual(result, "checo")
         # Image should NOT be deleted when upload fails
         mock_remove.assert_not_called()
+
+    def test_consecutive_match_confidence_converted_to_75(self):
+        """Verify that a confidence of 0.751 (which int(confidence * 100) -> 75)
+        is stored as 75 in DynamoDB. This ensures mutants that add +100
+        (producing 175) are caught.
+        """
+        # Bright image so darkness check is bypassed
+        self.request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+        # Model returns a top score just above the 0.75 threshold such that
+        # int(0.751 * 100) == 75, but confidence > 0.75 so the branch is taken.
+        output = np.array([[0.05, 0.751, 0.199]])
+        self.imx500.get_outputs.return_value = [output]
+
+        result = process_detection(
+            self.request, self.imx500, self.intrinsics,
+            self.data_table, self.url_table, self.s3_client,
+            self.labels, s3_bucket="bucket",
+            previous_label="checo", darkness_threshold=30
+        )
+
+        # Should return the detected label and record to DynamoDB
+        self.assertEqual(result, "checo")
+        self.data_table.put_item.assert_called_once()
+        item = self.data_table.put_item.call_args[1]['Item']
+        # Ensure the confidence stored is 75 (int(0.751*100)), not 175 (mutant)
+        self.assertEqual(item['confidence'], 75)
+
 class TestButtonPressed(unittest.TestCase):
     def test_sets_flag_on_falling_edge(self):
         flag = [False]
