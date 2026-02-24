@@ -287,6 +287,12 @@ def process_mutant(
             error_msg = test_result.get('error', 'Unknown error')
             print(f"\n   ERROR: Test {'generation' if iteration == 1 else 'fix'} failed: {error_msg}")
             if iteration == max_iterations:
+                # Roll back any previously applied test before returning
+                if iteration > 1 and test_class and test_method_name:
+                    print(f"   Rolling back test before exit...")
+                    from .test_applier import remove_test
+                    rollback_ok, rollback_msg = remove_test(test_file_path, test_class, test_method_name)
+                    print(f"   {'OK' if rollback_ok else 'FAIL'}: {rollback_msg}")
                 return {
                     "mutant_id": mutant_id,
                     "status": "error",
@@ -296,8 +302,19 @@ def process_mutant(
 
         test_class = test_result.get("test_class", test_class)
         test_method_name = test_result.get("test_method_name", test_method_name)
-        test_code = test_result["test_code"]
+        test_code = test_result.get("test_code", "")
         explanation = test_result.get("explanation", explanation)
+
+        # If we still don't have class/method/code, we can't proceed
+        if not test_class or not test_method_name or not test_code:
+            print(f"\n   ERROR: Incomplete test result (missing class, method, or code)")
+            if iteration == max_iterations:
+                return {
+                    "mutant_id": mutant_id,
+                    "status": "error",
+                    "reason": "LLM returned incomplete test (missing class, method, or code)",
+                }
+            continue
 
         print(f"\n2. {'Generated' if iteration == 1 else 'Fixed'} test{iteration_suffix}:")
         print(f"   Class: {test_class}")
@@ -343,6 +360,13 @@ def process_mutant(
             print(f"   ERROR: {apply_msg}")
 
             if iteration == max_iterations:
+                # Roll back any previously applied test before returning
+                if iteration > 1 and test_class and test_method_name:
+                    print(f"   Rolling back test before exit...")
+                    from .test_applier import remove_test
+                    rollback_ok, rollback_msg = remove_test(test_file_path, test_class, test_method_name)
+                    if rollback_ok:
+                        print(f"   OK: Test rolled back")
                 return {
                     "mutant_id": mutant_id,
                     "status": "error",
@@ -528,7 +552,31 @@ def run_agent_loop(
             remaining_triage.append(entry)
             if phase_logger:
                 phase_logger.log_prefilter(mid, False)
+    elif mutation_engine == "mutmut":
+        from .verifier import _verify_mutmut_mutant
+        test_file_path = package_dir / "test_cat_finder.py"
 
+        print(f"Pre-filtering: checking {len(triage_results)} mutant(s) against existing tests...")
+        for entry in triage_results:
+            mid = entry.get("mutant_id", "unknown")
+            killed, _ = _verify_mutmut_mutant(mid, test_file_path, package_dir)
+            if killed:
+                already_killed_results.append({
+                    "mutant_id": mid,
+                    "status": "already_killed",
+                    "reason": "Killed by existing tests (pre-filter)",
+                })
+                logger.log_result(mid, "already_killed", "Killed by existing tests (pre-filter)")
+                if phase_logger:
+                    phase_logger.log_prefilter(mid, True)
+                continue
+            remaining_triage.append(entry)
+            if phase_logger:
+                phase_logger.log_prefilter(mid, False)
+    else:
+        remaining_triage = triage_results
+
+    if mutation_engine in ("mutahunter", "mutmut"):
         filtered = len(already_killed_results)
         print(f"Pre-filter complete: {filtered} already killed, {len(remaining_triage)} remaining\n")
         if phase_logger:
@@ -538,8 +586,6 @@ def run_agent_loop(
             print("WARNING: ALL mutants are already killed by existing tests.")
             print("The mutant list is likely stale (generated from an older test suite).")
             print("Re-run the full pipeline without --skip-mutmut to generate fresh mutations.\n")
-    else:
-        remaining_triage = triage_results
 
     results = list(already_killed_results)
     for i, mutant_entry in enumerate(remaining_triage):
@@ -565,22 +611,28 @@ def run_agent_loop(
 
         # Re-check this mutant in case a test written earlier in this run now kills it
         mutant_file_path = mutant_entry.get("mutant_file") if mutation_engine == "mutahunter" else None
+        already_killed = False
 
         if mutation_engine == "mutahunter" and mutant_file_path:
             test_file_path = package_dir / "test_cat_finder.py"
             already_killed, msg = _verify_mutahunter_mutant(
                 mutant_id, mutant_file_path, test_file_path, package_dir
             )
+        elif mutation_engine == "mutmut":
+            test_file_path = package_dir / "test_cat_finder.py"
+            already_killed, msg = _verify_mutmut_mutant(
+                mutant_id, test_file_path, package_dir
+            )
 
-            if already_killed:
-                print(f"OK: Mutant now killed by a test written earlier in this run - skipping")
-                results.append({
-                    "mutant_id": mutant_id,
-                    "status": "already_killed",
-                    "reason": "Killed by test written earlier in this run",
-                })
-                logger.log_result(mutant_id, "already_killed", "Killed by test written earlier in this run")
-                continue
+        if already_killed:
+            print(f"OK: Mutant now killed by a test written earlier in this run - skipping")
+            results.append({
+                "mutant_id": mutant_id,
+                "status": "already_killed",
+                "reason": "Killed by test written earlier in this run",
+            })
+            logger.log_result(mutant_id, "already_killed", "Killed by test written earlier in this run")
+            continue
 
         result = process_mutant(
             mutant_entry,

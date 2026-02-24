@@ -10,65 +10,6 @@ import tempfile
 from pathlib import Path
 
 
-def run_mutmut_on_mutant(
-    mutant_id: str, package_dir: Path, mutmut_bin: str | None = None
-) -> tuple[bool, str]:
-    """
-    Run tests against a specific mutant to verify it's killed.
-
-    Args:
-        mutant_id: The mutant ID to test
-        package_dir: Root directory of the package
-        mutmut_bin: Path to mutmut binary (optional)
-
-    Returns:
-        (killed, output) where killed is True if mutant was killed
-    """
-    if mutmut_bin is None:
-        # Try to find mutmut in venv
-        venv_mutmut = package_dir / "../../.venv/bin/mutmut"
-        if venv_mutmut.exists():
-            mutmut_bin = str(venv_mutmut.resolve())
-        else:
-            mutmut_bin = "mutmut"
-
-    cmd = [mutmut_bin, "run", "--test-time-base=10.0", "--paths-to-mutate", "cat_finder.py"]
-
-    try:
-        # Run mutmut and capture output
-        result = subprocess.run(
-            cmd,
-            cwd=package_dir,
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minutes max
-        )
-
-        output = result.stdout + result.stderr
-
-        # Check if the specific mutant was killed
-        # We need to check the mutmut results to see if this specific mutant survived
-        results_path = package_dir / "mutation_testing" / "mutmut_results.txt"
-
-        if results_path.exists():
-            results_content = results_path.read_text()
-            # Check if mutant_id is marked as killed
-            if f"{mutant_id}: killed" in results_content:
-                return (True, output)
-            elif f"{mutant_id}: survived" in results_content:
-                return (False, output)
-            else:
-                # Mutant not found in results, assume it wasn't tested
-                return (False, f"Mutant {mutant_id} not found in results")
-
-        return (False, "Results file not found")
-
-    except subprocess.TimeoutExpired:
-        return (False, "Timeout running mutmut")
-    except Exception as e:
-        return (False, f"Error running mutmut: {e}")
-
-
 def verify_test_kills_mutant(
     mutant_id: str,
     test_file_path: Path,
@@ -196,7 +137,10 @@ def _verify_mutmut_mutant(
     package_dir: Path,
     mutmut_bin: str | None = None,
 ) -> tuple[bool, str]:
-    """Verify mutmut mutant by applying it and running tests."""
+    """Verify mutmut mutant by applying it and running tests.
+
+    mutmut v3 removed --restore. We backup/restore the source file manually.
+    """
     if mutmut_bin is None:
         # Try to find mutmut in venv
         venv_mutmut = package_dir / "../../.venv/bin/mutmut"
@@ -204,6 +148,18 @@ def _verify_mutmut_mutant(
             mutmut_bin = str(venv_mutmut.resolve())
         else:
             mutmut_bin = "mutmut"
+
+    # Determine source file from mutant_id (e.g., "cat_finder.x_func__mutmut_1" -> "cat_finder.py")
+    source_module = mutant_id.split(".")[0] if "." in mutant_id else "cat_finder"
+    source_path = package_dir / f"{source_module}.py"
+
+    if not source_path.exists():
+        return (False, f"Source file not found: {source_path}")
+
+    # Backup original source before applying mutant
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.py') as backup:
+        backup_path = Path(backup.name)
+        backup.write(source_path.read_text())
 
     try:
         # Apply the mutant
@@ -216,6 +172,9 @@ def _verify_mutmut_mutant(
         )
 
         if apply_result.returncode != 0:
+            # Restore and return error
+            shutil.copy2(backup_path, source_path)
+            backup_path.unlink()
             return (False, f"Failed to apply mutant {mutant_id}: {apply_result.stderr}")
 
         print(f"      Applied mutant: {mutant_id}")
@@ -231,14 +190,9 @@ def _verify_mutmut_mutant(
 
         test_failed = result.returncode != 0
 
-        # Restore original (mutmut stores backup)
-        subprocess.run(
-            [mutmut_bin, "apply", "--restore"],
-            cwd=package_dir,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        # Restore original from backup
+        shutil.copy2(backup_path, source_path)
+        backup_path.unlink()
 
         if not test_failed:
             # Test passed with mutant - mutant survived!
@@ -249,16 +203,14 @@ def _verify_mutmut_mutant(
         return (True, f"Test passes with original, fails with mutant. MUTANT KILLED!")
 
     except Exception as e:
-        # Try to restore original
-        try:
-            subprocess.run(
-                [mutmut_bin, "apply", "--restore"],
-                cwd=package_dir,
-                capture_output=True,
-                timeout=30,
-            )
-        except:
-            pass
+        # Restore original in case of error
+        if backup_path.exists():
+            try:
+                shutil.copy2(backup_path, source_path)
+                backup_path.unlink()
+                print(f"      Original file restored after error")
+            except:
+                pass
         return (False, f"Error during mutant verification: {e}")
 
 

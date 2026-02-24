@@ -14,17 +14,16 @@ agentic_testing/ standalone and portable.
 
 from __future__ import annotations
 
-import json
-import os
 import re
 import subprocess
 from pathlib import Path
 
+from .llm_client import call_llm_json
+
 
 # LLM Configuration
 LLM_MODEL = "gpt-4o-mini"
-LLM_TEMPERATURE = 1
-LLM_API_URL = "https://api.openai.com/v1/chat/completions"
+LLM_TEMPERATURE = 0.2
 
 
 def parse_survived_mutants(results_path: Path) -> list[str]:
@@ -136,7 +135,8 @@ Do NOT recommend tests for:
 - Cosmetic changes (variable names in error messages, f-string tweaks)
 - Equivalent mutations that produce the same observable behavior
 - Changes to code that only affects developer-facing output (not return values, not side effects)
-- **Mutations inside main()** — main() requires pigpio, Picamera2, IMX500, camera, boto3, and complex hardware mocking that cannot be reliably unit tested. If the mutation is in main()'s setup code (pi.callback, camera config, etc.), do NOT recommend a test.
+- **ANY mutation inside main()** — main() starts at approximately line 198 and goes to the end of the file. It requires pigpio, Picamera2, IMX500, camera, boto3, and complex hardware mocking that cannot be reliably unit tested. This includes ALL code inside `def main():` — setup code, the event loop, button flag checking (button_pressed_flag[0]), pi.callback registration, camera config, process_detection calls from within main(), etc. If the source line number is >= 198 and the code is inside main(), do NOT recommend a test.
+- **Mutations to module-level constants that are only used by main()** — e.g., DARKNESS_THRESHOLD is only passed to process_detection inside main(). Since main() cannot be reliably tested, mutations to constants used only by main() are effectively untestable.
 
 Only recommend a test if the mutation changes a **return value, a stored value (e.g. database entry), a control flow decision, or an externally visible side effect** in a way that would be wrong.
 
@@ -188,36 +188,10 @@ Example 2 (comparison operator):
 def fetch_llm_analysis(prompt: str, api_key: str) -> dict | None:
     """Call OpenAI API (or compatible) and return parsed JSON analysis."""
     try:
-        import urllib.request
-
-        body = {
-            "model": LLM_MODEL,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            "temperature": LLM_TEMPERATURE,
-        }
-        req = urllib.request.Request(
-            LLM_API_URL,
-            data=json.dumps(body).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
-            method="POST",
+        messages = [{"role": "user", "content": prompt}]
+        return call_llm_json(
+            messages, api_key, LLM_MODEL,
+            temperature=LLM_TEMPERATURE, timeout=60, max_retries=1,
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode())
-        text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-        # Try to parse JSON from the response (might be wrapped in markdown)
-        text = text.strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```\w*\n?", "", text)
-            text = re.sub(r"\n?```\s*$", "", text)
-        return json.loads(text)
     except Exception as e:
         return {"error": str(e), "should_write_test": None, "reason": "", "suggestion": ""}

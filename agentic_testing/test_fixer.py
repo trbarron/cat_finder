@@ -4,13 +4,13 @@ Fix failed tests using LLM based on error messages.
 """
 
 import json
-import urllib.request
 from pathlib import Path
+
+from .llm_client import call_llm_json
 
 
 LLM_MODEL = "gpt-4o-mini"
 LLM_TEMPERATURE = 1
-LLM_API_URL = "https://api.openai.com/v1/chat/completions"
 
 
 def fix_failed_test(
@@ -178,38 +178,14 @@ Output JSON only with the fixed test code.
 """
 
     try:
-        body = {
-            "model": LLM_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": LLM_TEMPERATURE,
-        }
-
-        req = urllib.request.Request(
-            LLM_API_URL,
-            data=json.dumps(body).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
-            method="POST",
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        result = call_llm_json(
+            messages, api_key, LLM_MODEL,
+            temperature=LLM_TEMPERATURE, timeout=120, max_retries=1,
         )
-
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read().decode())
-
-        text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        text = text.strip()
-
-        # Strip markdown code blocks if present
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1] if "\n" in text else text[3:]
-            text = text.rsplit("```", 1)[0] if "```" in text else text
-            text = text.strip()
-
-        result = json.loads(text)
         result["success"] = True
         return result
 

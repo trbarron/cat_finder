@@ -5,13 +5,13 @@ Generate test code using LLM based on agent_prompt from triage analysis.
 
 import json
 import os
-import urllib.request
 from pathlib import Path
+
+from .llm_client import call_llm_json
 
 
 LLM_MODEL = "gpt-5-mini"
 LLM_TEMPERATURE = 1  # gpt-5-mini only supports temperature=1
-LLM_API_URL = "https://api.openai.com/v1/chat/completions"
 
 
 def generate_test_code(
@@ -240,38 +240,14 @@ Generate a new test method that kills this mutant. Output JSON only.
 """
 
     try:
-        body = {
-            "model": LLM_MODEL,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": LLM_TEMPERATURE,
-        }
-
-        req = urllib.request.Request(
-            LLM_API_URL,
-            data=json.dumps(body).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
-            method="POST",
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        result = call_llm_json(
+            messages, api_key, LLM_MODEL,
+            temperature=LLM_TEMPERATURE, timeout=120, max_retries=1,
         )
-
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            data = json.loads(resp.read().decode())
-
-        text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-        text = text.strip()
-
-        # Strip markdown code blocks if present
-        if text.startswith("```"):
-            text = text.split("\n", 1)[1]  # Remove first line
-            text = text.rsplit("```", 1)[0]  # Remove last line
-            text = text.strip()
-
-        result = json.loads(text)
         result["success"] = True
         return result
 
