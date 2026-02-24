@@ -14,10 +14,6 @@ cd agentic_testing
 # Run from cat_finder directory
 cd ..
 python3 -m agentic_testing.cli
-
-# With options
-python3 -m agentic_testing.cli --limit 5 --auto
-python3 -m agentic_testing.cli --mutation-engine mutahunter
 ```
 
 ## How It Works
@@ -27,34 +23,23 @@ python3 -m agentic_testing.cli --mutation-engine mutahunter
 3. **LLM Triage**: Analyzes survived mutants to filter out false positives (uses gpt-4o-mini)
 4. **Pre-Filter**: Bulk-checks all mutants against existing tests upfront, skipping already-killed ones
 5. **Test Generation**: Uses gpt-5-mini to generate targeted tests with full source context
-6. **Self-Correction**: Automatically fixes failed tests with full traceback context (up to 5 iterations, uses gpt-5-mini)
+6. **Self-Correction**: Automatically fixes failed tests with full traceback context (up to 5 iterations, uses gpt-4o-mini)
 7. **Verification**: Confirms tests pass with original code and fail with mutant code
 
 ## Setup
 
 ### Virtual Environment
 
-The module uses its own venv for dependency isolation. **Python 3.11 required** (mutahunter dependency limitation):
+The module uses its own venv for dependency isolation. **Python 3.11 required** (mutahunter dependency limitation).
+
+Run the setup script:
 
 ```bash
 cd agentic_testing
-
-# Create venv with Python 3.11
-python3.11 -m venv venv
-
-# Install core dependencies
-./venv/bin/pip install -r requirements.txt
-
-# Install mutahunter (LLM-powered mutations)
-./venv/bin/pip install git+https://github.com/codeintegrity-ai/mutahunter.git
-
-# Apply bug fix (one-line patch for AttributeError)
-sed -i '' '51 a\
-        self.unexpected_test_error_mutants = 0
-' ./venv/lib/python3.11/site-packages/mutahunter/core/controller.py
-
-echo "Setup complete!"
+./setup.sh
 ```
+
+This creates the venv, installs dependencies, installs mutahunter, and applies the mutahunter bug fix.
 
 ### Environment Variables
 
@@ -63,6 +48,46 @@ Required: `OPENAI_API_KEY` for LLM calls
 Create `.env` in the `cat_finder` directory:
 ```bash
 OPENAI_API_KEY=sk-...
+```
+
+## Example Runs
+
+### Mutmut (rule-based, fast)
+
+```bash
+# Full interactive run — mutmut generates mutants, you approve each test
+python3 -m agentic_testing.cli
+
+# Auto mode — no approval, creates PR at end
+python3 -m agentic_testing.cli --auto
+
+# Limit to 5 mutants for a quick test
+python3 -m agentic_testing.cli --limit 5 --auto
+
+# Re-run with existing mutmut results (skip mutation step)
+python3 -m agentic_testing.cli --skip-mutmut
+
+# Re-run with existing triage too (jump straight to test generation)
+python3 -m agentic_testing.cli --skip-mutmut --skip-triage
+
+# Dry run — preview everything without modifying files
+python3 -m agentic_testing.cli --dry-run
+```
+
+### Mutahunter (LLM-powered, semantic)
+
+```bash
+# Full run with mutahunter mutations
+python3 -m agentic_testing.cli --mutation-engine mutahunter
+
+# Auto mode with mutahunter
+python3 -m agentic_testing.cli --mutation-engine mutahunter --auto
+
+# Limit + skip mutation step (use cached mutahunter results)
+python3 -m agentic_testing.cli --mutation-engine mutahunter --skip-mutmut --limit 10
+
+# Custom source/test files
+python3 -m agentic_testing.cli --mutation-engine mutahunter --source-file my_module.py --test-file test_my_module.py
 ```
 
 ## CLI Options
@@ -79,18 +104,6 @@ Options:
   --mutation-engine ENGINE  mutmut (rule-based) or mutahunter (LLM-powered)
   --source-file FILE        Source file to mutate (default: cat_finder.py)
   --test-file FILE          Test file (default: test_cat_finder.py)
-```
-
-### Mutation Engines
-
-**mutmut (default)**: Rule-based, fast mutations
-```bash
-python3 -m agentic_testing.cli
-```
-
-**mutahunter**: LLM-powered semantic mutations (requires setup)
-```bash
-python3 -m agentic_testing.cli --mutation-engine mutahunter
 ```
 
 ## Modes
@@ -110,15 +123,17 @@ python3 -m agentic_testing.cli --mutation-engine mutahunter
 
 ```
 cli.py                  # Main entry point
+|-- run_mutmut.py       # Mutmut wrapper (skips print/logging mutations)
 |-- run_mutahunter.py   # Mutahunter wrapper (sets LITELLM_DROP_PARAMS for gpt-5 compat)
 |-- mutahunter_parser.py # Parse results, syntax-check mutants, test untested mutants
 |-- triage.py           # LLM triage (gpt-4o-mini)
 |-- agent_loop.py       # Main loop with bulk pre-filter and per-mutant processing
 |-- test_generator.py   # Generate tests via LLM (gpt-5-mini, full source context)
-|-- test_fixer.py       # Fix failed tests with full traceback (gpt-5-mini)
+|-- test_fixer.py       # Fix failed tests with full traceback (gpt-4o-mini)
 |-- error_extractor.py  # Parse pytest errors
 |-- test_applier.py     # Apply/remove tests (allows stdlib imports, blocks source imports)
 |-- verifier.py         # Verify mutants are killed
+|-- phase_logger.py     # Per-phase log file management
 ```
 
 ## LLM Models
@@ -127,7 +142,7 @@ cli.py                  # Main entry point
 |-----------|-------|-----|
 | Triage | gpt-4o-mini | Simple yes/no classification, cost-effective |
 | Test generation | gpt-5-mini | Hardest task, needs to write correct mock-heavy tests |
-| Test fixer | gpt-5-mini | Needs to understand errors + code together |
+| Test fixer | gpt-4o-mini | Understands errors + code, cost-effective for iteration |
 | Mutahunter | gpt-5-mini | Mutation generation (via LITELLM_DROP_PARAMS=true) |
 
 Note: gpt-5-mini only supports temperature=1. The `LITELLM_DROP_PARAMS` env var is set when running mutahunter to drop unsupported parameters.
@@ -172,22 +187,6 @@ The loop tracks all outcome types:
 - **New tests written**: Successfully generated and verified tests
 - **Verification failed**: Test generation failed after max attempts (rolled back)
 - **Effective kill rate**: (success + already_killed) / total
-
-## LLM Triage Filters
-
-Automatically filters out mutants that don't need tests:
-- Print statement mutations
-- Logging mutations
-- Cosmetic/string changes
-- Already covered edge cases
-
-Only generates tests for real logic bugs.
-
-## Files
-
-- `requirements.txt` - Python dependencies
-- `venv/` - Virtual environment (isolated dependencies)
-- `.agentic_testing_cache/` - Cached results, triage, and logs
 
 ## Mutation Engines Comparison
 
