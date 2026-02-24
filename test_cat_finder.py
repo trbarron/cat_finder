@@ -93,6 +93,44 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.return_value = np.full((100, 100, 3), 25, dtype=np.uint8)
         self.assertTrue(is_image_too_dark(request, darkness_threshold=30))
 
+    def test_image_between_threshold_and_threshold_plus_ten_classified_as_not_dark(self):
+        """Create an image with average brightness between darkness_threshold and darkness_threshold+10
+        (e.g., 35 when threshold=30) and assert that process_detection treats it as NOT dark.
+
+        The ORIGINAL code calls is_image_too_dark(request, darkness_threshold) so this image
+        should not be classified as dark and process_detection should proceed to classification
+        (returning a label). The MUTANT increases the threshold by 10 when calling is_image_too_dark
+        from process_detection, which would incorrectly classify this image as dark and return
+        "none". This test passes on the original code and fails on the mutant.
+        """
+        # Prepare a request whose mean brightness is 35 (between 30 and 40)
+        request = MagicMock()
+        request.make_array.return_value = np.full((100, 100, 3), 35, dtype=np.uint8)
+        request.get_metadata.return_value = object()
+
+        # Prepare a simple model output where class index 1 has the highest score
+        imx500 = MagicMock()
+        imx500.get_outputs.return_value = [np.array([[0.1, 0.9]])]
+
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+
+        data_table = MagicMock()
+        url_table = MagicMock()
+        s3_client = MagicMock()
+        labels = ["neither", "checo"]
+
+        # Call process_detection with darkness_threshold=30. Original should NOT treat mean=35 as dark
+        result = process_detection(
+            request, imx500, intrinsics,
+            data_table, url_table, s3_client,
+            labels, s3_bucket="bucket",
+            previous_label=None, darkness_threshold=30
+        )
+
+        # Expect classification to proceed and return the top label ('checo')
+        self.assertEqual(result, "checo")
+
 
 
 class TestParseClassificationResults(unittest.TestCase):
