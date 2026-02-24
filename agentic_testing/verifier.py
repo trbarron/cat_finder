@@ -76,6 +76,7 @@ def verify_test_kills_mutant(
     mutmut_bin: str | None = None,
     mutation_engine: str = "mutmut",
     mutant_file_path: str | None = None,
+    test_method_name: str | None = None,
 ) -> tuple[bool, str]:
     """
     Verify that a newly added test kills a specific mutant.
@@ -97,8 +98,11 @@ def verify_test_kills_mutant(
     """
     # Step 1: Verify new test passes with ORIGINAL code
     try:
+        pytest_cmd = [sys.executable, "-m", "pytest", str(test_file_path), "-v", "-x"]
+        if test_method_name:
+            pytest_cmd.extend(["-k", test_method_name])
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", str(test_file_path), "-v", "-x"],
+            pytest_cmd,
             cwd=package_dir,
             capture_output=True,
             text=True,
@@ -117,9 +121,9 @@ def verify_test_kills_mutant(
     # Step 2: Verify test FAILS with MUTANT code
 
     if mutation_engine == "mutahunter":
-        return _verify_mutahunter_mutant(mutant_id, mutant_file_path, test_file_path, package_dir)
+        return _verify_mutahunter_mutant(mutant_id, mutant_file_path, test_file_path, package_dir, test_method_name=test_method_name)
     else:
-        return _verify_mutmut_mutant(mutant_id, test_file_path, package_dir, mutmut_bin)
+        return _verify_mutmut_mutant(mutant_id, test_file_path, package_dir, mutmut_bin, test_method_name=test_method_name)
 
 
 def _verify_mutahunter_mutant(
@@ -127,6 +131,7 @@ def _verify_mutahunter_mutant(
     mutant_file_path: str | None,
     test_file_path: Path,
     package_dir: Path,
+    test_method_name: str | None = None,
 ) -> tuple[bool, str]:
     """Verify mutahunter mutant by temporarily replacing source file."""
     if not mutant_file_path:
@@ -157,8 +162,11 @@ def _verify_mutahunter_mutant(
         shutil.copy2(mutant_path, source_path)
 
         # Run test against mutant
+        mutant_pytest_cmd = [sys.executable, "-m", "pytest", str(test_file_path), "-v", "-x"]
+        if test_method_name:
+            mutant_pytest_cmd.extend(["-k", test_method_name])
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", str(test_file_path), "-v", "-x"],
+            mutant_pytest_cmd,
             cwd=package_dir,
             capture_output=True,
             text=True,
@@ -195,6 +203,7 @@ def _verify_mutmut_mutant(
     test_file_path: Path,
     package_dir: Path,
     mutmut_bin: str | None = None,
+    test_method_name: str | None = None,
 ) -> tuple[bool, str]:
     """Verify mutmut mutant by applying it and running tests."""
     if mutmut_bin is None:
@@ -221,8 +230,11 @@ def _verify_mutmut_mutant(
         print(f"      Applied mutant: {mutant_id}")
 
         # Run test against mutant
+        mutmut_pytest_cmd = [sys.executable, "-m", "pytest", str(test_file_path), "-v", "-x"]
+        if test_method_name:
+            mutmut_pytest_cmd.extend(["-k", test_method_name])
         result = subprocess.run(
-            [sys.executable, "-m", "pytest", str(test_file_path), "-v", "-x"],
+            mutmut_pytest_cmd,
             cwd=package_dir,
             capture_output=True,
             text=True,

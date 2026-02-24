@@ -349,6 +349,7 @@ def process_mutant(
                 package_dir,
                 mutation_engine=mutation_engine,
                 mutant_file_path=mutant_file_path,
+                test_method_name=test_method_name,
             )
 
             if verify_success:
@@ -525,31 +526,35 @@ def run_agent_loop(
         remaining_triage = triage_results
 
     results = list(already_killed_results)
+    tests_modified = False
+    tests_added_count = 0
     for i, mutant_entry in enumerate(remaining_triage):
         mutant_id = mutant_entry.get("mutant_id", "unknown")
         logger.log_mutant_start(mutant_id, i + 1, len(remaining_triage))
 
-        # Sanity check before each mutant: verify tests still pass
-        print(f"Sanity check: verifying all tests pass...")
-        tests_pass, test_output = check_tests_pass(package_dir)
+        # Sanity check only when tests were modified in a previous iteration
+        if tests_modified:
+            print(f"Sanity check: verifying all tests pass...")
+            tests_pass, test_output = check_tests_pass(package_dir)
 
-        if not tests_pass:
-            print(f"FAIL: Sanity check failed before processing {mutant_id}!")
-            print("Tests are broken, likely from a previous mutation.")
-            print("\nStopping to prevent further damage.")
-            results.append({
-                "mutant_id": mutant_id,
-                "status": "sanity_check_failed",
-                "reason": "Tests broken before processing this mutant",
-            })
-            break
+            if not tests_pass:
+                print(f"FAIL: Sanity check failed before processing {mutant_id}!")
+                print("Tests are broken, likely from a previous mutation.")
+                print("\nStopping to prevent further damage.")
+                results.append({
+                    "mutant_id": mutant_id,
+                    "status": "sanity_check_failed",
+                    "reason": "Tests broken before processing this mutant",
+                })
+                break
 
-        print(f"OK: All tests pass")
+            print(f"OK: All tests pass")
 
         # Re-check this mutant in case a test written earlier in this run now kills it
+        # Only worth checking if we've actually added new tests
         mutant_file_path = mutant_entry.get("mutant_file") if mutation_engine == "mutahunter" else None
 
-        if mutation_engine == "mutahunter" and mutant_file_path:
+        if mutation_engine == "mutahunter" and mutant_file_path and tests_added_count > 0:
             test_file_path = package_dir / "test_cat_finder.py"
             already_killed, msg = _verify_mutahunter_mutant(
                 mutant_id, mutant_file_path, test_file_path, package_dir
@@ -576,6 +581,12 @@ def run_agent_loop(
             phase_logger=phase_logger,
         )
         results.append(result)
+
+        # Track whether tests were modified (for sanity check and re-verification)
+        if result["status"] in ("success", "verification_failed"):
+            tests_modified = True
+        if result["status"] == "success":
+            tests_added_count += 1
 
         # Log result
         logger.log_result(

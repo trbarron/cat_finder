@@ -17,6 +17,7 @@ Usage:
 """
 
 import argparse
+import concurrent.futures
 import json
 import os
 import subprocess
@@ -51,6 +52,7 @@ def run_mutahunter(
     test_file: str = "test_cat_finder.py",
     model: str = "gpt-5-mini",
     phase_logger: "PhaseLogger | None" = None,
+    limit: int | None = None,
 ) -> bool:
     """Run mutahunter to generate LLM-powered mutations."""
     print("\n" + "=" * 80)
@@ -88,7 +90,8 @@ def run_mutahunter(
 
     # Parse mutahunter results
     print("\nParsing mutahunter results...")
-    mutant_entries = parse_mutahunter_results(package_dir, source_file, phase_logger=phase_logger)
+    max_survived = min(limit, 30) if limit else 30
+    mutant_entries = parse_mutahunter_results(package_dir, source_file, max_survived=max_survived, phase_logger=phase_logger)
 
     # Cache parsed results
     cache_dir = package_dir / ".agentic_testing_cache"
@@ -157,14 +160,25 @@ def triage_mutahunter_entries(
     mutant_entries: list[dict], package_dir: Path, api_key: str,
     phase_logger: "PhaseLogger | None" = None,
 ) -> list[dict]:
-    """Triage mutahunter mutant entries with LLM."""
-    triaged_mutants = []
+    """Triage mutahunter mutant entries with LLM (parallel)."""
+    # Phase 1: Build all triage entries and prompts locally (fast)
+    triage_entries = []
+    prompts = []
 
-    for i, entry in enumerate(mutant_entries):
+    # Read test files once (shared across all entries)
+    test_files_content = read_test_file_contents(
+        package_dir, ["test_cat_finder.py"]
+    )
+    test_content_str = ""
+    for path, content in test_files_content.items():
+        lines = content.splitlines()
+        if len(lines) > 120:
+            content = "\n".join(lines[:120]) + "\n... (truncated)"
+        test_content_str += f"--- {path} ---\n{content}\n\n"
+    test_content_str = test_content_str.strip()
+
+    for entry in mutant_entries:
         mutant_id = entry.get("mutant_id", "unknown")
-        print(f"\n  [{i+1}/{len(mutant_entries)}] Triaging {mutant_id}...")
-
-        # Get source snippet
         source_file = entry.get("source_file")
         line_no = entry.get("line_no")
         source_snippet = ""
@@ -174,20 +188,6 @@ def triage_mutahunter_entries(
             if source_path.exists():
                 source_snippet = get_source_snippet(source_path, line_no)
 
-        # Read test files (use default for now)
-        test_files_content = read_test_file_contents(
-            package_dir, ["test_cat_finder.py"]
-        )
-
-        # Truncate long test files
-        test_content_str = ""
-        for path, content in test_files_content.items():
-            lines = content.splitlines()
-            if len(lines) > 120:
-                content = "\n".join(lines[:120]) + "\n... (truncated)"
-            test_content_str += f"--- {path} ---\n{content}\n\n"
-
-        # Build triage entry
         triage_entry = {
             "mutant_id": mutant_id,
             "mangled_name": entry.get("mangled_name", ""),
@@ -195,30 +195,46 @@ def triage_mutahunter_entries(
             "source_file": source_file,
             "source_snippet": source_snippet,
             "tests_that_run": ["test_cat_finder.py"],
-            "test_files_content": test_content_str.strip(),
-            "mutant_file": entry.get("mutant_file", ""),  # IMPORTANT: for verification
+            "test_files_content": test_content_str,
+            "mutant_file": entry.get("mutant_file", ""),
             "line_no": entry.get("line_no"),
         }
 
-        # Build prompt and call LLM
         prompt = build_llm_prompt(triage_entry)
         if phase_logger:
             phase_logger.log_triage_request(mutant_id, prompt)
 
-        analysis = fetch_llm_analysis(prompt, api_key)
-        triage_entry["llm_analysis"] = analysis
+        triage_entries.append(triage_entry)
+        prompts.append(prompt)
 
-        if phase_logger:
-            phase_logger.log_triage_response(mutant_id, analysis)
+    # Phase 2: Parallel LLM calls
+    print(f"\n  Triaging {len(triage_entries)} mutant(s) in parallel (max_workers=5)...")
+    triaged_mutants = []
 
-        should_write = analysis.get("should_write_test", False)
-        reason = analysis.get("reason", "")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_idx = {
+            executor.submit(fetch_llm_analysis, prompt, api_key): idx
+            for idx, prompt in enumerate(prompts)
+        }
 
-        print(f"    should_write_test: {should_write}")
-        print(f"    reason: {reason}")
+        for future in concurrent.futures.as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            triage_entry = triage_entries[idx]
+            mutant_id = triage_entry["mutant_id"]
 
-        if should_write:
-            triaged_mutants.append(triage_entry)
+            analysis = future.result()
+            triage_entry["llm_analysis"] = analysis
+
+            if phase_logger:
+                phase_logger.log_triage_response(mutant_id, analysis)
+
+            should_write = analysis.get("should_write_test", False)
+            reason = analysis.get("reason", "")
+
+            print(f"  [{idx+1}/{len(triage_entries)}] {mutant_id}: should_write={should_write} | {reason}")
+
+            if should_write:
+                triaged_mutants.append(triage_entry)
 
     print(f"\n{len(triaged_mutants)} mutant(s) need tests (after triage)")
     return triaged_mutants
@@ -288,11 +304,12 @@ def triage_mutants(
     if venv_mutmut.exists():
         mutmut_bin = str(venv_mutmut.resolve())
 
-    # Analyze each mutant with LLM triage
-    triaged_mutants = []
+    # Phase 1: Build all entries locally (includes run_mutmut_show which is local)
+    entries = []
+    prompts = []
 
     for i, mutant_id in enumerate(survived):
-        print(f"\n  [{i+1}/{len(survived)}] Triaging {mutant_id}...")
+        print(f"\n  [{i+1}/{len(survived)}] Preparing {mutant_id}...")
 
         mangled = mangled_name_from_mutant_id(mutant_id)
         diff_output = run_mutmut_show(mutant_id, package_dir, mutmut_bin)
@@ -324,25 +341,41 @@ def triage_mutants(
             "test_files_content": test_content_str.strip(),
         }
 
-        # Build prompt and call LLM
         prompt = build_llm_prompt(entry)
         if phase_logger:
             phase_logger.log_triage_request(mutant_id, prompt)
 
-        analysis = fetch_llm_analysis(prompt, api_key)
-        entry["llm_analysis"] = analysis
+        entries.append(entry)
+        prompts.append(prompt)
 
-        if phase_logger:
-            phase_logger.log_triage_response(mutant_id, analysis)
+    # Phase 2: Parallel LLM calls
+    print(f"\n  Triaging {len(entries)} mutant(s) in parallel (max_workers=5)...")
+    triaged_mutants = []
 
-        should_write = analysis.get("should_write_test", False)
-        reason = analysis.get("reason", "")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        future_to_idx = {
+            executor.submit(fetch_llm_analysis, prompt, api_key): idx
+            for idx, prompt in enumerate(prompts)
+        }
 
-        print(f"    should_write_test: {should_write}")
-        print(f"    reason: {reason}")
+        for future in concurrent.futures.as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            entry = entries[idx]
+            mutant_id = entry["mutant_id"]
 
-        if should_write:
-            triaged_mutants.append(entry)
+            analysis = future.result()
+            entry["llm_analysis"] = analysis
+
+            if phase_logger:
+                phase_logger.log_triage_response(mutant_id, analysis)
+
+            should_write = analysis.get("should_write_test", False)
+            reason = analysis.get("reason", "")
+
+            print(f"  [{idx+1}/{len(entries)}] {mutant_id}: should_write={should_write} | {reason}")
+
+            if should_write:
+                triaged_mutants.append(entry)
 
     print(f"\n{len(triaged_mutants)} mutant(s) need tests (after triage)")
     return triaged_mutants
@@ -530,7 +563,7 @@ def main() -> int:
             if not run_mutmut(package_dir, args.source_file, phase_logger=phase_logger):
                 return 1
         elif args.mutation_engine == "mutahunter":
-            if not run_mutahunter(package_dir, args.source_file, args.test_file, phase_logger=phase_logger):
+            if not run_mutahunter(package_dir, args.source_file, args.test_file, phase_logger=phase_logger, limit=args.limit):
                 return 1
     else:
         print(f"Skipping {args.mutation_engine} run (using existing results)")

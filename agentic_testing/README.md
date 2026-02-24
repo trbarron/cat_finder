@@ -84,7 +84,7 @@ python3 -m agentic_testing.cli --mutation-engine mutahunter
 python3 -m agentic_testing.cli --mutation-engine mutahunter --auto
 
 # Limit + skip mutation step (use cached mutahunter results)
-python3 -m agentic_testing.cli --mutation-engine mutahunter --skip-mutation --limit 10
+python3 -m agentic_testing.cli --mutation-engine mutahunter --skip-mutation --limit 10 --auto
 
 # Custom source/test files
 python3 -m agentic_testing.cli --mutation-engine mutahunter --source-file my_module.py --test-file test_my_module.py
