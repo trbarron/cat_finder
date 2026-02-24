@@ -81,27 +81,40 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
         self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
 
-    def test_make_array_called_with_main(self):
-        """Ensure is_image_too_dark calls request.make_array with the string "main" and
-        returns False for a bright image. The mock returns a bright array when called with
-        "main" and a dark array when called with None to distinguish the original from
-        the mutant that would call make_array(None).
+    def test_default_threshold_considers_equal_not_dark(self):
+        """Test that calling is_image_too_dark without specifying the threshold uses the function's default
+        and that an image with average brightness exactly equal to that default (30) is NOT considered too dark.
+        """
+        request = MagicMock()
+        # Create an image with mean brightness exactly 30
+        request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
+        # Call without passing darkness_threshold so the function's default is used
+        self.assertFalse(is_image_too_dark(request))
+
+    def test_make_array_returns_none_for_main(self):
+        """Test that is_image_too_dark returns False when request.make_array("main") returns None.
+
+        The original code calls request.make_array("main") and should handle a None image by
+        returning False. The mutant calls request.make_array(None) instead; to ensure the mutant
+        behaves differently we make make_array return a valid dark image when called with None.
         """
         request = MagicMock()
 
-        # Return a bright image when called with "main", but a dark image when called with None.
-        def make_array(arg):
-            if arg is None:
-                return np.full((10, 10, 3), 5, dtype=np.uint8)   # dark
+        def make_array_side(arg):
+            # Return None when asked for the "main" buffer (original behavior)
             if arg == "main":
-                return np.full((10, 10, 3), 150, dtype=np.uint8) # bright
-            return np.full((10, 10, 3), 150, dtype=np.uint8)
+                return None
+            # Mutant would call with None, return a dark image in that case so behavior differs
+            if arg is None:
+                return np.full((10, 10, 3), 5, dtype=np.uint8)
+            return None
 
-        request.make_array.side_effect = make_array
+        request.make_array.side_effect = make_array_side
 
-        # Original behavior: calls make_array("main") and returns False (not too dark)
+        # Original should return False when make_array("main") yields None
         self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
-        request.make_array.assert_called_once_with("main")
+
+
 class TestParseClassificationResults(unittest.TestCase):
     def test_valid_output(self):
         imx500 = MagicMock()
