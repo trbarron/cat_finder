@@ -65,10 +65,10 @@ python3 -m agentic_testing.cli --auto
 python3 -m agentic_testing.cli --limit 5 --auto
 
 # Re-run with existing mutmut results (skip mutation step)
-python3 -m agentic_testing.cli --skip-mutmut
+python3 -m agentic_testing.cli --skip-mutation
 
 # Re-run with existing triage too (jump straight to test generation)
-python3 -m agentic_testing.cli --skip-mutmut --skip-triage
+python3 -m agentic_testing.cli --skip-mutation --skip-triage
 
 # Dry run — preview everything without modifying files
 python3 -m agentic_testing.cli --dry-run
@@ -84,7 +84,7 @@ python3 -m agentic_testing.cli --mutation-engine mutahunter
 python3 -m agentic_testing.cli --mutation-engine mutahunter --auto
 
 # Limit + skip mutation step (use cached mutahunter results)
-python3 -m agentic_testing.cli --mutation-engine mutahunter --skip-mutmut --limit 10
+python3 -m agentic_testing.cli --mutation-engine mutahunter --skip-mutation --limit 10
 
 # Custom source/test files
 python3 -m agentic_testing.cli --mutation-engine mutahunter --source-file my_module.py --test-file test_my_module.py
@@ -99,7 +99,7 @@ Options:
   --auto                    Auto mode: skip human approval, create PR at end
   --dry-run                 Don't modify files or create PR
   --limit N                 Process only first N mutants
-  --skip-mutmut             Use existing mutation results
+  --skip-mutation             Use existing mutation results
   --skip-triage             Use existing triage results
   --mutation-engine ENGINE  mutmut (rule-based) or mutahunter (LLM-powered)
   --source-file FILE        Source file to mutate (default: cat_finder.py)
@@ -216,3 +216,4 @@ The loop tracks all outcome types:
 
 - [Meta's ACH Paper](https://engineering.fb.com/2025/02/05/security/revolutionizing-software-testing-llm-powered-bug-catchers-meta-ach/)
 - [mutmut Documentation](https://github.com/boxed/mutmut)
+- [mutahunter Documentation](https://github.com/codeintegrity-ai/mutahunter)

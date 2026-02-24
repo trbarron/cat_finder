@@ -20,11 +20,11 @@ import re
 import subprocess
 from pathlib import Path
 
+from .llm_client import call_llm
 
 # LLM Configuration
 LLM_MODEL = "gpt-4o-mini"
-LLM_TEMPERATURE = 1
-LLM_API_URL = "https://api.openai.com/v1/chat/completions"
+LLM_TEMPERATURE = 0.2
 
 
 def parse_survived_mutants(results_path: Path) -> list[str]:
@@ -188,36 +188,7 @@ Example 2 (comparison operator):
 def fetch_llm_analysis(prompt: str, api_key: str) -> dict | None:
     """Call OpenAI API (or compatible) and return parsed JSON analysis."""
     try:
-        import urllib.request
-
-        body = {
-            "model": LLM_MODEL,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt,
-                }
-            ],
-            "temperature": LLM_TEMPERATURE,
-        }
-        req = urllib.request.Request(
-            LLM_API_URL,
-            data=json.dumps(body).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = json.loads(resp.read().decode())
-        text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-
-        # Try to parse JSON from the response (might be wrapped in markdown)
-        text = text.strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```\w*\n?", "", text)
-            text = re.sub(r"\n?```\s*$", "", text)
-        return json.loads(text)
+        messages = [{"role": "user", "content": prompt}]
+        return call_llm(messages, api_key, model=LLM_MODEL, temperature=LLM_TEMPERATURE, timeout=60)
     except Exception as e:
         return {"error": str(e), "should_write_test": None, "reason": "", "suggestion": ""}

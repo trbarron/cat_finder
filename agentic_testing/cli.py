@@ -153,7 +153,6 @@ def run_mutmut(package_dir: Path, source_file: str = "cat_finder.py", phase_logg
 
 
 
-
 def triage_mutahunter_entries(
     mutant_entries: list[dict], package_dir: Path, api_key: str,
     phase_logger: "PhaseLogger | None" = None,
@@ -249,7 +248,7 @@ def triage_mutants(
         # Load parsed mutahunter results
         mutahunter_cache = cache_dir / "mutahunter_parsed.json"
         if not mutahunter_cache.exists():
-            print("Error: No mutahunter results found. Run with --skip-mutmut=false first.")
+            print("Error: No mutahunter results found. Run with --skip-mutation=false first.")
             return []
 
         mutant_entries = json.loads(mutahunter_cache.read_text())
@@ -413,9 +412,6 @@ Co-Authored-By: Claude Opus 4.6 <noreply@anthropic.com>"""
         )
 
         # Create PR using gh
-        already_killed_count = sum(1 for r in summary.get('results', [])
-                                    if r.get('status') == 'already_killed')
-
         pr_body = f"""## Summary
 Automatically generated tests to kill survived mutants from mutation testing.
 
@@ -481,7 +477,7 @@ def main() -> int:
         help="Limit to first N mutants (for testing)",
     )
     parser.add_argument(
-        "--skip-mutmut",
+        "--skip-mutation",
         action="store_true",
         help="Skip running mutation generation (use existing results)",
     )
@@ -529,16 +525,13 @@ def main() -> int:
     print(f"Logging to: {phase_logger.run_dir}")
 
     # Step 1: Run mutation engine (unless skipped)
-    if not args.skip_mutmut:
+    if not args.skip_mutation:
         if args.mutation_engine == "mutmut":
             if not run_mutmut(package_dir, args.source_file, phase_logger=phase_logger):
                 return 1
         elif args.mutation_engine == "mutahunter":
             if not run_mutahunter(package_dir, args.source_file, args.test_file, phase_logger=phase_logger):
                 return 1
-        else:
-            print(f"Unknown mutation engine: {args.mutation_engine}", file=sys.stderr)
-            return 1
     else:
         print(f"Skipping {args.mutation_engine} run (using existing results)")
 

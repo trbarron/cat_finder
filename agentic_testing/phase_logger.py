@@ -16,6 +16,7 @@ Each phase writes to its own log file inside a timestamped run directory:
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -85,7 +86,6 @@ class PhaseLogger:
 
     def log_triage_response(self, mutant_id: str, response: dict):
         self.log("triage", f"\nRESPONSE for {mutant_id}:")
-        import json
         self.log("triage", json.dumps(response, indent=2))
 
     def log_prefilter(self, mutant_id: str, killed: bool, detail: str = ""):
@@ -101,7 +101,6 @@ class PhaseLogger:
         self.log("generation", agent_prompt)
 
     def log_generation_response(self, mutant_id: str, response: dict):
-        import json
         self.log("generation", f"\nLLM RESPONSE for {mutant_id}:")
         self.log("generation", json.dumps(response, indent=2, default=str))
 
@@ -111,7 +110,6 @@ class PhaseLogger:
         self.log("fixing", error_message)
 
     def log_fixing_response(self, mutant_id: str, iteration: int, response: dict):
-        import json
         self.log("fixing", f"\nFIX RESPONSE (attempt {iteration}):")
         self.log("fixing", json.dumps(response, indent=2, default=str))
 
@@ -122,7 +120,6 @@ class PhaseLogger:
             self.log("verification", f"  Output (first 500 chars):\n{output[:500]}")
 
     def log_summary(self, summary: dict):
-        import json
         self.log("summary", json.dumps(summary, indent=2, default=str))
 
     @property

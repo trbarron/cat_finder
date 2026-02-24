@@ -12,6 +12,7 @@ Inspired by Meta's ACH (Automated Compliance Hardening):
 """
 
 import json
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -23,8 +24,6 @@ from .verifier import verify_test_kills_mutant
 from .test_fixer import fix_failed_test
 from .error_extractor import extract_pytest_error
 from .phase_logger import PhaseLogger
-import subprocess
-import sys
 
 
 def check_tests_pass(package_dir: Path, test_file: str = "test_cat_finder.py") -> tuple[bool, str]:
@@ -146,22 +145,6 @@ Total processed:      {total}
         print(f"\nLog files written to:")
         print(f"  Full log: {self.log_file}")
         print(f"  Generated tests: {self.generated_tests_file}")
-
-
-def load_triage_results(report_path: Path) -> list[dict[str, Any]]:
-    """
-    Parse the triage report (from analyze_survived_mutants.py --call-llm)
-    and extract mutants that need tests.
-
-    For now, we'll work with the raw analysis data structure.
-    In practice, we'll need to load the JSON-formatted results.
-
-    Returns:
-        List of mutant entries that should_write_test is True
-    """
-    # This would load from a JSON export of the triage results
-    # For now, returning empty list as placeholder
-    return []
 
 
 def process_mutant(
@@ -537,7 +520,7 @@ def run_agent_loop(
         if remaining_triage == [] and filtered > 0:
             print("WARNING: ALL mutants are already killed by existing tests.")
             print("The mutant list is likely stale (generated from an older test suite).")
-            print("Re-run the full pipeline without --skip-mutmut to generate fresh mutations.\n")
+            print("Re-run the full pipeline without --skip-mutation to generate fresh mutations.\n")
     else:
         remaining_triage = triage_results
 

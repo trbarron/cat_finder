@@ -185,7 +185,7 @@ def _verify_mutahunter_mutant(
                 shutil.copy2(backup_path, source_path)
                 backup_path.unlink()
                 print(f"      Original file restored after error")
-            except:
+            except Exception:
                 pass
         return (False, error_msg)
 
@@ -257,7 +257,7 @@ def _verify_mutmut_mutant(
                 capture_output=True,
                 timeout=30,
             )
-        except:
+        except Exception:
             pass
         return (False, f"Error during mutant verification: {e}")
 
