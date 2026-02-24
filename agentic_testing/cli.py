@@ -49,6 +49,7 @@ def run_mutahunter(
     source_file: str = "cat_finder.py",
     test_file: str = "test_cat_finder.py",
     model: str = "gpt-5-mini",
+    phase_logger: "PhaseLogger | None" = None,
 ) -> bool:
     """Run mutahunter to generate LLM-powered mutations."""
     print("\n" + "=" * 80)
@@ -114,13 +115,12 @@ def run_mutmut(package_dir: Path, source_file: str = "cat_finder.py") -> bool:
     # Use the custom run_mutmut.py wrapper (from agentic_testing folder)
     mutmut_wrapper = Path(__file__).parent / "run_mutmut.py"
 
+    # mutmut v3 reads config from setup.cfg (paths_to_mutate, runner, etc.)
+    # No CLI flags needed -- just "run"
     cmd = [
         python_cmd,
         str(mutmut_wrapper),
         "run",
-        "--paths-to-mutate",
-        source_file,
-        "--test-time-base=10.0",
     ]
 
     try:

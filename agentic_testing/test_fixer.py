@@ -21,6 +21,7 @@ def fix_failed_test(
     source_snippet: str,
     agent_prompt: str,
     api_key: str,
+    mutation_diff: str = "",
 ) -> dict:
     """
     Fix a failed test using LLM based on the error message.
@@ -90,6 +91,29 @@ Common issues to fix:
 
 8. **Stdlib imports (threading, uuid, datetime, etc.) ARE allowed inside test methods.**
 
+
+9. **NEVER use source inspection as a fix strategy:**
+   - NEVER use `inspect.getsource()` to check source code text
+   - Tests must verify BEHAVIOR (call the function, check results/side effects), not source text
+   - If a behavioral test is hard to write, simplify the test approach rather than falling back to source inspection
+
+10. **Module-level constants vs function parameter defaults:**
+    - If the mutant targets a module-level constant, the test must exercise the code path that actually uses it
+    - Check function signatures for actual default values -- don't assume a function uses a module constant
+
+11. **Don't duplicate existing test coverage:**
+    - If the fix makes the test equivalent to an existing test (same branch, same kind of input), it won't kill the mutant
+    - Focus on the EXACT boundary the mutant changes and pick an input that sits on that boundary
+    - Example: testing empty strings vs None for a falsy check covers the same branch -- find a different approach
+
+12. **Prefer direct function tests over main() integration tests:**
+    - If the current test calls main() with complex mocking and keeps failing, consider rewriting to test the specific function directly
+    - main() tests are fragile due to setup complexity -- test the function where the mutation actually occurs
+
+13. **Don't assert on print output or guess kwargs:**
+    - Don't use `mock_print.assert_any_call(...)` as the primary assertion
+    - Check the actual function signature before using call_args -- don't assume kwargs like `Item` that belong to different functions
+
 Output JSON format:
 {
   "test_code": "    def test_method_name(self):\\n        ...",
@@ -100,7 +124,27 @@ Output JSON format:
 IMPORTANT: Output ONLY the fixed test method code (with proper indentation), not the entire class.
 """
 
-    user_prompt = f"""**Test that failed:**
+    # Format mutation diff as before/after if available
+    diff_section = ""
+    if mutation_diff:
+        before_lines = []
+        after_lines = []
+        for line in mutation_diff.splitlines():
+            if line.startswith("---") or line.startswith("+++") or line.startswith("@@"):
+                continue
+            if line.startswith("-") and not line.startswith("---"):
+                before_lines.append(line[1:].strip())
+            elif line.startswith("+") and not line.startswith("+++"):
+                after_lines.append(line[1:].strip())
+        if before_lines or after_lines:
+            diff_section = f"""
+**MUTATION the test must kill:**
+- ORIGINAL (correct): `{' | '.join(before_lines)}`
+- MUTANT (incorrect):  `{' | '.join(after_lines)}`
+"""
+
+    user_prompt = f"""{diff_section}
+**Test that failed:**
 ```python
 {failed_test_code}
 ```
@@ -118,7 +162,7 @@ IMPORTANT: Output ONLY the fixed test method code (with proper indentation), not
 {source_snippet}
 ```
 
-**Task**: Fix this test so it passes. Analyze the error and make the necessary corrections.
+**Task**: Fix this test so it passes against the ORIGINAL code and fails against the MUTANT code. Analyze the error and make the necessary corrections.
 
 Common fixes needed:
 - If error mentions UUID format: use `from uuid import UUID` and `UUID('12345678-1234-5678-1234-567812345678')`

@@ -265,6 +265,7 @@ def process_mutant(
                 full_source_context,
                 agent_prompt,
                 api_key,
+                mutation_diff=diff,
             )
 
         if not test_result.get("success"):

@@ -15,7 +15,7 @@ def run_mutahunter(
     source_file: str,
     test_file: str,
     test_command: str,
-    model: str = "gpt-5-mini",
+    model: str = "gpt-4o-mini",
     venv_path: Path = None,
 ) -> bool:
     """

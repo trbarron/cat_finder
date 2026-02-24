@@ -125,6 +125,67 @@ def test_example(self):
 
 6. **Stdlib imports (threading, uuid, datetime, etc.) ARE allowed inside test methods.**
    - Only imports of the module under test (cat_finder) are blocked.
+
+7. **NEVER use source inspection as a test strategy:**
+   - NEVER use `inspect.getsource()` to check source code text
+   - NEVER assert that a specific string exists in the source code
+   - Tests must verify BEHAVIOR (call the function, check the result/side effects), not source text
+   - Source inspection tests are fragile, don't test real behavior, and will be rejected
+
+8. **Module-level constants vs function parameter defaults:**
+   - If a mutant changes a module-level constant (e.g., `DARKNESS_THRESHOLD = 69`), your test must exercise the code path that USES that constant (e.g., `main()` or `process_detection()` which passes it explicitly)
+   - Do NOT call a function without arguments and assume it uses the module constant -- check the function signature for its actual default value
+   - Example: `is_image_too_dark(request)` uses default=30 from the function signature, NOT the module-level `DARKNESS_THRESHOLD=69`
+
+9. **Don't duplicate existing test coverage:**
+   - Before writing a new test, carefully review the existing tests provided below
+   - If an existing test already exercises the SAME code branch / condition that the mutant changes, your new test must use a DIFFERENT input or assertion strategy that specifically distinguishes original from mutant behavior
+   - Ask yourself: "Would the existing test already fail if this mutant were applied?" If yes, the mutant is likely already killed and a new test won't help
+   - Example: If existing tests already cover `not os.getenv(var)` with missing env vars (None), adding a test with empty strings ('') doesn't help -- both are falsy and hit the same branch
+   - Focus on the EXACT boundary the mutant changes (e.g., `<` vs `<=`, `>=` vs `>`) and pick an input that sits exactly on that boundary
+
+10. **Prefer direct function tests over main() integration tests:**
+    - NEVER write tests that call main() unless the mutant is specifically in main()'s own logic (e.g., env var checking, setup code)
+    - If the mutant is in a helper function (process_detection, is_image_too_dark, button_pressed, etc.), test that function DIRECTLY
+    - main() tests require complex mocking (FakePi, environment, camera, etc.) and are fragile -- they waste iterations on setup bugs instead of testing the actual mutation
+    - Example: If the mutant changes `if button_pressed_flag[0]:` inside main(), but the flag check controls whether `process_detection` is called with `is_button_triggered=True`, test `process_detection` directly with that parameter instead
+
+11. **Don't assert on print/log output to verify behavior:**
+    - NEVER use `mock_print.assert_any_call("some message")` as your primary assertion
+    - Print messages are cosmetic and may change -- assert on return values, mock call counts, or side effects instead
+    - Example: Instead of asserting a print message, assert that `process_detection` was called with `is_button_triggered=True`
+
+12. **Know the function signatures -- don't guess kwargs:**
+    - Check the ACTUAL function signature in the source code before writing assertions on call_args
+    - process_detection does NOT take an `Item` kwarg -- that's a DynamoDB pattern
+    - If unsure, assert on positional args (`call_args[0]`) or use `assert_called_with()` with the correct signature
+"""
+
+    # Format mutation diff as clear before/after
+    diff_context = ""
+    if mutation_diff:
+        before_lines = []
+        after_lines = []
+        for line in mutation_diff.splitlines():
+            if line.startswith("---") or line.startswith("+++") or line.startswith("@@"):
+                continue
+            if line.startswith("-") and not line.startswith("---"):
+                before_lines.append(line[1:].strip())
+            elif line.startswith("+") and not line.startswith("+++"):
+                after_lines.append(line[1:].strip())
+
+        if before_lines or after_lines:
+            diff_context = f"""
+**EXACT MUTATION (this is what your test must distinguish):**
+- ORIGINAL code (correct): `{' | '.join(before_lines)}`
+- MUTANT code (incorrect):  `{' | '.join(after_lines)}`
+
+Your test MUST pick an input where the original code produces a DIFFERENT result than the mutant code.
+
+**Full diff:**
+```diff
+{mutation_diff}
+```
 """
 
     source_context = ""

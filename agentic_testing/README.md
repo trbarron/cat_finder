@@ -205,9 +205,6 @@ Only generates tests for real logic bugs.
 - The self-correction loop should fix most issues automatically (up to 5 attempts)
 - Use `--dry-run` to preview without applying changes
 
-**All mutants already killed?**
-- The mutant list is stale. Re-run without `--skip-mutmut` to generate fresh mutations.
-
 **No mutants found?**
 - Ensure tests are passing first: `pytest test_cat_finder.py`
 - Check `.agentic_testing_cache/mutmut_results.txt` for mutation results
@@ -215,10 +212,6 @@ Only generates tests for real logic bugs.
 **LLM errors?**
 - Verify `OPENAI_API_KEY` is set correctly in `.env`
 - Check API rate limits and quotas
-- For gpt-5-mini temperature errors with mutahunter, ensure `LITELLM_DROP_PARAMS=true` is set (handled automatically by `run_mutahunter.py`)
-
-**Stale bytecode?**
-- If you see `NameError` after editing files, clear the cache: `rm -rf agentic_testing/__pycache__`
 
 ## References
 
