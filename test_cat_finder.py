@@ -93,6 +93,19 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.return_value = np.full((100, 100, 3), 25, dtype=np.uint8)
         self.assertTrue(is_image_too_dark(request, darkness_threshold=30))
 
+    def test_mean_25_median_30_classified_as_dark(self):
+        """Create a 1x1 RGB image whose channel values are [0, 30, 45].
+
+        The mean across all channels is (0+30+45)/3 = 25, which is below the
+        darkness_threshold=30, so the ORIGINAL implementation (using mean)
+        should return True. The MUTANT (using median) would compute median=30
+        and therefore return False; this test kills that mutant.
+        """
+        request = MagicMock()
+        # Shape (1,1,3): channels [0, 30, 45] -> mean=25, median=30
+        request.make_array.return_value = np.array([[[0, 30, 45]]], dtype=np.uint8)
+        self.assertTrue(is_image_too_dark(request, darkness_threshold=30))
+
 
 
 class TestParseClassificationResults(unittest.TestCase):
