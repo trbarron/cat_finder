@@ -93,6 +93,41 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.return_value = np.full((100, 100, 3), 25, dtype=np.uint8)
         self.assertTrue(is_image_too_dark(request, darkness_threshold=30))
 
+    def test_image_between_threshold_and_threshold_plus_ten_processed_as_not_dark(self):
+        """Ensure an image with average brightness 35 and darkness_threshold=30 is
+        treated as NOT too dark by the original process_detection (returns a label).
+
+        The mutant increases the threshold by 10 inside process_detection, which would
+        classify this image as dark and return "none". This test asserts the
+        ORIGINAL behavior (returning the classification label) and will fail against
+        the mutant.
+        """
+        request = MagicMock()
+        imx500 = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+        data_table = MagicMock()
+        url_table = MagicMock()
+        s3_client = MagicMock()
+        labels = ["neither", "checo", "tuni"]
+
+        # Create an image with mean brightness = 35 (between 30 and 40)
+        request.make_array.return_value = np.full((100, 100, 3), 35, dtype=np.uint8)
+        request.get_metadata.return_value = object()
+
+        # Model returns high confidence for class index 1 ("checo")
+        output = np.array([[0.05, 0.90, 0.05]])
+        imx500.get_outputs.return_value = [output]
+
+        result = process_detection(
+            request, imx500, intrinsics,
+            data_table, url_table, s3_client,
+            labels, s3_bucket="bucket", previous_label=None, darkness_threshold=30
+        )
+
+        # ORIGINAL behavior: image is NOT too dark, so classification is returned
+        self.assertEqual(result, "checo")
+
 
 
 class TestParseClassificationResults(unittest.TestCase):
