@@ -136,8 +136,15 @@ Do NOT recommend tests for:
 - Cosmetic changes (variable names in error messages, f-string tweaks)
 - Equivalent mutations that produce the same observable behavior
 - Changes to code that only affects developer-facing output (not return values, not side effects)
+- **Mutations inside main()** — main() requires pigpio, Picamera2, IMX500, camera, boto3, and complex hardware mocking that cannot be reliably unit tested. If the mutation is in main()'s setup code (pi.callback, camera config, etc.), do NOT recommend a test.
 
 Only recommend a test if the mutation changes a **return value, a stored value (e.g. database entry), a control flow decision, or an externally visible side effect** in a way that would be wrong.
+
+**CRITICAL: Check if existing tests already cover the mutated branch.**
+- Look at the test file content provided below. If an existing test already exercises the SAME code path / condition that the mutant changes, a new test is unlikely to help — the mutant likely survives for a reason other than missing coverage (e.g., equivalent mutation).
+- Only recommend a new test if you can identify a SPECIFIC input that sits on the exact boundary the mutant changes (e.g., `<` vs `<=` at threshold=10 means testing with exactly 10).
+- If the mutant changes a module-level constant, check whether any test actually exercises the code path that USES that constant (not just calls the function with a different default).
+- Do NOT recommend tests that would be equivalent to existing ones (same branch, same kind of input).
 
 **Mutant ID:** {entry["mutant_id"]}
 

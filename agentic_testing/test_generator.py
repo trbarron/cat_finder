@@ -21,6 +21,7 @@ def generate_test_code(
     api_key: str,
     source_snippet: str = "",
     full_source: str = "",
+    mutation_diff: str = "",
 ) -> dict:
     """
     Generate test code using LLM based on the agent_prompt from triage.
@@ -123,8 +124,11 @@ def test_example(self):
    - flag is a list like [False], lock is a threading.Lock()
    - Test by passing real flag/lock and asserting flag[0] after the call
 
-6. **Stdlib imports (threading, uuid, datetime, etc.) ARE allowed inside test methods.**
-   - Only imports of the module under test (cat_finder) are blocked.
+6. **Import rules inside test methods:**
+   - Stdlib imports (threading, uuid, datetime, etc.) ARE allowed inside test methods.
+   - `import cat_finder` (bare import) is allowed inside test methods -- use `cat_finder.main()`, `cat_finder.DARKNESS_THRESHOLD`, etc.
+   - `from cat_finder import ...` is STRICTLY FORBIDDEN inside test methods. This will cause an immediate rejection.
+   - If you need main(), use: `import cat_finder` then `cat_finder.main()` -- NEVER `from cat_finder import main`.
 
 7. **NEVER use source inspection as a test strategy:**
    - NEVER use `inspect.getsource()` to check source code text
@@ -144,11 +148,12 @@ def test_example(self):
    - Example: If existing tests already cover `not os.getenv(var)` with missing env vars (None), adding a test with empty strings ('') doesn't help -- both are falsy and hit the same branch
    - Focus on the EXACT boundary the mutant changes (e.g., `<` vs `<=`, `>=` vs `>`) and pick an input that sits exactly on that boundary
 
-10. **Prefer direct function tests over main() integration tests:**
-    - NEVER write tests that call main() unless the mutant is specifically in main()'s own logic (e.g., env var checking, setup code)
+10. **NEVER test main() -- test helper functions directly instead:**
+    - NEVER write tests that call main(). main() requires FakePi, pigpio, Picamera2, IMX500, camera, boto3, environment variables, and many more mocks. These tests ALWAYS fail and waste all 5 fix attempts.
     - If the mutant is in a helper function (process_detection, is_image_too_dark, button_pressed, etc.), test that function DIRECTLY
-    - main() tests require complex mocking (FakePi, environment, camera, etc.) and are fragile -- they waste iterations on setup bugs instead of testing the actual mutation
-    - Example: If the mutant changes `if button_pressed_flag[0]:` inside main(), but the flag check controls whether `process_detection` is called with `is_button_triggered=True`, test `process_detection` directly with that parameter instead
+    - If the mutant is in main()'s own setup code (e.g., env var checking, pi.callback registration, camera setup), the mutation is NOT testable with a simple unit test. Return a test that calls the specific helper function with the affected parameter instead.
+    - Example: If the mutant changes `darkness_threshold` passed to `process_detection()` inside main(), test `process_detection()` directly with the original threshold value.
+    - Example: If the mutant changes `pi.callback(BUTTON_PIN, ...)` in main(), test `button_pressed()` directly instead -- you cannot reliably mock the entire pigpio/camera setup.
 
 11. **Don't assert on print/log output to verify behavior:**
     - NEVER use `mock_print.assert_any_call("some message")` as your primary assertion
@@ -215,7 +220,8 @@ Your test MUST pick an input where the original code produces a DIFFERENT result
 
     imports_note = "\n".join(f"  - {imp}" for imp in import_lines)
 
-    user_prompt = f"""**Agent prompt (what to test):**
+    user_prompt = f"""{diff_context}
+**Agent prompt (what to test):**
 {agent_prompt}
 
 **Test file to modify:** {test_file_path}
@@ -253,7 +259,7 @@ Generate a new test method that kills this mutant. Output JSON only.
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read().decode())
 
         text = data.get("choices", [{}])[0].get("message", {}).get("content", "")
