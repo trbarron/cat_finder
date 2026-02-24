@@ -81,6 +81,54 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
         self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
 
+    def test_image_mean_just_below_threshold_detected_as_dark(self):
+        """An image with average brightness just below the darkness threshold should be
+        considered too dark. This will fail against a mutant that adds +10 to the
+        computed average brightness (e.g., 20 -> 30), which would incorrectly
+        classify it as not dark.
+        """
+        request = MagicMock()
+        # Create an image with mean brightness = 20, threshold = 30
+        request.make_array.return_value = np.full((100, 100, 3), 20, dtype=np.uint8)
+        self.assertTrue(is_image_too_dark(request, darkness_threshold=30))
+
+    def test_image_between_threshold_and_threshold_plus_ten_processed_not_dark(self):
+        """An image whose mean brightness is greater than darkness_threshold but
+        less than darkness_threshold + 10 should NOT be treated as dark by the
+        original process_detection(). This will fail against the mutant which
+        increases the threshold by 10 before calling is_image_too_dark.
+        """
+        request = MagicMock()
+        imx500 = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+        data_table = MagicMock()
+        url_table = MagicMock()
+        s3_client = MagicMock()
+        labels = ["neither", "checo", "tuni"]
+
+        # Set mean brightness to 35 with darkness_threshold=30. Original code
+        # should NOT classify this as dark (35 < 30 -> False) and should
+        # proceed to classification returning the predicted label.
+        request.make_array.return_value = np.full((100, 100, 3), 35, dtype=np.uint8)
+
+        # Model returns high confidence for "checo" (index 1)
+        output = np.array([[0.05, 0.90, 0.05]])
+        imx500.get_outputs.return_value = [output]
+
+        result = process_detection(
+            request, imx500, intrinsics,
+            data_table, url_table, s3_client,
+            labels, s3_bucket="bucket", darkness_threshold=30
+        )
+
+        # ORIGINAL behavior: not dark, so classification result returned
+        self.assertEqual(result, "checo")
+        # No dark-image logging should have occurred
+        data_table.put_item.assert_not_called()
+
+
+
 
 class TestParseClassificationResults(unittest.TestCase):
     def test_valid_output(self):
@@ -199,6 +247,31 @@ class TestParseClassificationResults(unittest.TestCase):
         total_score = sum(r.score for r in results)
         # With softmax applied, the scores for all 3 classes should sum to 1.0
         self.assertAlmostEqual(total_score, 1.0, places=6)
+
+    def test_2d_output_flatten_order_affects_top_index(self):
+        """When the model returns a 2D output, flattening must use row-major (C) order.
+
+        The original code uses flatten() (C-order) so the top index should be 1 for
+        the constructed matrix. The mutant uses Fortran order which would make the
+        top index 2 instead. This test verifies the original behavior.
+        """
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+
+        # 2x2 output arranged so row-major flatten -> [0.2, 0.9, 0.8, 0.1]
+        # top value is 0.9 at flattened index 1 (original behavior)
+        # Fortran flatten would reorder to [0.2, 0.8, 0.9, 0.1] making index 2 the top
+        output = np.array([[0.2, 0.9],
+                           [0.8, 0.1]])
+        imx500.get_outputs.return_value = [output]
+
+        results = parse_classification_results(imx500, request, intrinsics, [])
+        # We expect three results (min(3, 4)) and the top index to be 1 under original code
+        self.assertEqual(len(results), 3)
+        self.assertEqual(results[0].idx, 1)
+        self.assertAlmostEqual(results[0].score, 0.9)
 
 class TestAddToDataDynamodb(unittest.TestCase):
     def test_correct_item_structure(self):
@@ -378,6 +451,80 @@ class TestProcessDetection(unittest.TestCase):
         self.assertEqual(result, "checo")
         # Image should NOT be deleted when upload fails
         mock_remove.assert_not_called()
+
+    def test_confidence_at_075_records_75_in_dynamodb_call(self):
+        """Ensure a consecutive detection with confidence ~0.75 records the integer confidence 75.
+
+        We use a score slightly above 0.75 to trigger the "greater than 0.75" branch while
+        keeping int(confidence * 100) equal to 75. The test patches add_to_data_dynamodb and
+        asserts it was called with 75 as the confidence value (the mutant would add 100).
+        """
+        # Bright image so darkness check does not short-circuit
+        self.request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+        # Use a confidence just above 0.75 so the > 0.75 condition is True, but int(confidence*100) == 75
+        output = np.array([[0.05, 0.75000001, 0.05]])
+        self.imx500.get_outputs.return_value = [output]
+
+        with patch('cat_finder.add_to_data_dynamodb') as mock_add:
+            result = process_detection(
+                self.request, self.imx500, self.intrinsics,
+                self.data_table, self.url_table, self.s3_client,
+                self.labels, s3_bucket="bucket",
+                previous_label="checo", darkness_threshold=30
+            )
+
+            # Verify process_detection returns the predicted label
+            self.assertEqual(result, "checo")
+
+            # add_to_data_dynamodb should have been called once for the consecutive match
+            mock_add.assert_called_once()
+
+            # Inspect positional args: (dynamodb_table, timestamp, image_name, label, confidence)
+            called_args = mock_add.call_args[0]
+            # Table passed through
+            self.assertEqual(called_args[0], self.data_table)
+            # Label is the predicted label
+            self.assertEqual(called_args[3], "checo")
+            # The important check: confidence recorded should be int(confidence * 100) == 75
+            self.assertEqual(called_args[4], 75)
+
+    def test_dark_button_press_records_confidence_100(self):
+        """When a dark image is processed with a button press, ensure the
+        stored "none" detection uses a confidence value of 100 (not 0).
+
+        This patches add_to_data_dynamodb to inspect the positional args the
+        original code passes through. The mutant records 0 instead of 100,
+        so this test will fail against that mutant.
+        """
+        # Make image dark
+        self.request.make_array.return_value = np.full((100, 100, 3), 5, dtype=np.uint8)
+
+        with patch('cat_finder.add_to_data_dynamodb') as mock_add, \
+             patch('cat_finder.os.makedirs') as mock_makedirs, \
+             patch('cat_finder.upload_to_s3', return_value=None) as mock_upload:
+            result = process_detection(
+                self.request, self.imx500, self.intrinsics,
+                self.data_table, self.url_table, self.s3_client,
+                self.labels, s3_bucket="bucket",
+                is_button_triggered=True, darkness_threshold=30
+            )
+
+            # Function should return the 'none' label for a dark image
+            self.assertEqual(result, "none")
+
+            # add_to_data_dynamodb must have been called once for the button-triggered dark image
+            mock_add.assert_called_once()
+
+            # Inspect positional args: (dynamodb_table, timestamp, image_name, label, confidence)
+            called_args = mock_add.call_args[0]
+            # Ensure the table passed is the data_table
+            self.assertEqual(called_args[0], self.data_table)
+            # Label should be the special 'none' for dark image
+            self.assertEqual(called_args[3], "none")
+            # CRITICAL: confidence must be 100 according to original code
+            self.assertEqual(called_args[4], 100)
+
+
 class TestButtonPressed(unittest.TestCase):
     def test_sets_flag_on_falling_edge(self):
         flag = [False]
