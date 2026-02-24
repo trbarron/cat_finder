@@ -93,6 +93,78 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.return_value = np.full((100, 100, 3), 25, dtype=np.uint8)
         self.assertTrue(is_image_too_dark(request, darkness_threshold=30))
 
+    def test_main_passes_original_darkness_threshold_to_process_detection(self):
+        """Run main() in a controlled environment and assert that it passes the
+        original DARKNESS_THRESHOLD (69) to process_detection. This ensures the
+        mutated change of DARKNESS_THRESHOLD to 255 inside main would be detected
+        because process_detection would be called with a different darkness_threshold.
+        """
+        import cat_finder
+
+        # Provide all required env vars so main proceeds into its loop
+        env = {
+            'AWS_ACCESS_KEY_ID': 'x',
+            'AWS_SECRET_ACCESS_KEY': 'y',
+            'AWS_REGION': 'z',
+            'DYNAMODB_DATA_TABLE_NAME': 'dt',
+            'DYNAMODB_URL_TABLE_NAME': 'ut',
+            'S3_BUCKET_NAME': 'bucket'
+        }
+
+        with patch.dict('os.environ', env, clear=True), \
+             patch('cat_finder.load_dotenv'), \
+             patch('cat_finder.boto3'), \
+             patch('cat_finder.IMX500') as mock_imx, \
+             patch('cat_finder.Picamera2') as mock_picam, \
+             patch('cat_finder.time.sleep', side_effect=KeyboardInterrupt), \
+             patch('cat_finder.process_detection') as mock_proc:
+
+            # Configure IMX500/network intrinsics mock used by main()
+            imx_instance = MagicMock()
+            intrinsics = MagicMock()
+            intrinsics.task = 'classification'
+            intrinsics.labels = ['neither', 'checo', 'tuni']
+            intrinsics.preserve_aspect_ratio = False
+            intrinsics.softmax = False
+            imx_instance.network_intrinsics = intrinsics
+            imx_instance.show_network_fw_progress_bar = MagicMock()
+            mock_imx.return_value = imx_instance
+
+            # Configure Picamera2 mock and a simple request
+            picam_instance = MagicMock()
+            picam_instance.create_preview_configuration.return_value = {}
+            request = MagicMock()
+            # Image content not used because process_detection is patched, but provide methods
+            request.make_array.return_value = np.full((100, 100, 3), 255, dtype=np.uint8)
+            request.get_metadata.return_value = object()
+            request.save.return_value = None
+            request.release.return_value = None
+            picam_instance.capture_request.return_value = request
+            mock_picam.return_value = picam_instance
+
+            # Prepare pigpio.pi() mock: connected True and callback immediately invokes
+            pigpio_pi = MagicMock()
+            pigpio_pi.connected = True
+
+            def register_callback(pin, edge, cb):
+                # Simulate immediate falling edge event to set button flag
+                cb(pin, 0, 0)
+                return MagicMock()
+
+            pigpio_pi.callback.side_effect = register_callback
+
+            with patch('cat_finder.pigpio.pi', return_value=pigpio_pi):
+                # Run main; time.sleep will raise KeyboardInterrupt to stop after one iteration
+                cat_finder.main()
+
+            # Ensure process_detection was called and that the darkness_threshold kwarg
+            # matches the ORIGINAL value set in main() (69)
+            self.assertTrue(mock_proc.called)
+            called_kwargs = mock_proc.call_args[1]
+            self.assertIn('darkness_threshold', called_kwargs)
+            self.assertEqual(called_kwargs['darkness_threshold'], 69)
+
+
 
 
 class TestParseClassificationResults(unittest.TestCase):
