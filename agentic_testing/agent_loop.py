@@ -130,7 +130,7 @@ Result for {mutant_id}:
 {'='*80}
 FINAL SUMMARY
 {'='*80}
-Total processed:      {total}
+Total processed:        {total}
   Already killed:     {summary.get('already_killed', 0)}
   New tests written:  {summary.get('success', 0)}
   Verification failed:{summary.get('verification_failed', 0)}
@@ -361,6 +361,10 @@ def process_mutant(
                     "status": "success",
                     "test_class": test_class,
                     "test_method_name": test_method_name,
+                    "test_code": test_code,
+                    "source_file": source_file,
+                    "line_no": line_no,
+                    "diff": diff,
                     "explanation": explanation,
                     "iterations": iteration,
                 }
@@ -415,6 +419,10 @@ def process_mutant(
                 "status": "success",
                 "test_class": test_class,
                 "test_method_name": test_method_name,
+                "test_code": test_code,
+                "source_file": source_file,
+                "line_no": line_no,
+                "diff": diff,
                 "explanation": explanation,
                 "iterations": iteration,
             }
