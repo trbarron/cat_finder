@@ -391,6 +391,35 @@ class TestProcessDetection(unittest.TestCase):
         self.assertEqual(result, "checo")
         # Image should NOT be deleted when upload fails
         mock_remove.assert_not_called()
+
+    def test_dark_image_button_triggered_records_confidence_100(self):
+        """Simulate a dark image with the button pressed and ensure
+        add_to_data_dynamodb is called with a confidence value of 100.
+        This verifies the original behavior (100) versus the mutant (0).
+        """
+        # Make image dark
+        self.request.make_array.return_value = np.full((100, 100, 3), 5, dtype=np.uint8)
+
+        # Patch add_to_data_dynamodb to capture the call and avoid actual DynamoDB writes.
+        with patch('cat_finder.add_to_data_dynamodb') as mock_add, \
+             patch('cat_finder.os.makedirs') as mock_makedirs, \
+             patch('cat_finder.upload_to_s3', return_value=None):
+            result = process_detection(
+                self.request, self.imx500, self.intrinsics,
+                self.data_table, self.url_table, self.s3_client,
+                self.labels, s3_bucket="bucket",
+                is_button_triggered=True, darkness_threshold=30
+            )
+
+            # Should return "none" for a dark image
+            self.assertEqual(result, "none")
+            # add_to_data_dynamodb must have been called exactly once
+            mock_add.assert_called_once()
+            # The 5th positional arg is the confidence; expect 100 (original behavior)
+            self.assertEqual(mock_add.call_args[0][4], 100)
+            # Also ensure the label passed was 'none'
+            self.assertEqual(mock_add.call_args[0][3], "none")
+
 class TestButtonPressed(unittest.TestCase):
     def test_sets_flag_on_falling_edge(self):
         flag = [False]
