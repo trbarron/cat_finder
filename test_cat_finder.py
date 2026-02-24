@@ -213,6 +213,28 @@ class TestParseClassificationResults(unittest.TestCase):
         # With softmax applied, the scores for all 3 classes should sum to 1.0
         self.assertAlmostEqual(total_score, 1.0, places=6)
 
+    def test_flatten_memory_order_changes_class_index(self):
+        """Create a 2x2 model output where row-major (C) vs column-major (F) flattening
+        changes the ordering of elements. The ORIGINAL code uses C-order flatten(), so
+        the top class index should be 2 (value 0.9). The mutant using order='F' would
+        pick a different top index.
+        """
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+
+        # 2x2 output matrix. Row-major flatten -> [0.1, 0.2, 0.9, 0.0] (top index 2)
+        # Fortran flatten -> [0.1, 0.9, 0.2, 0.0] (top index 1) which would be wrong.
+        output = np.array([[0.1, 0.2], [0.9, 0.0]])
+        imx500.get_outputs.return_value = [output]
+
+        results = parse_classification_results(imx500, request, intrinsics, [])
+        # Ensure the ORIGINAL behavior (C-order flatten) is preserved
+        self.assertEqual(results[0].idx, 2)
+        self.assertAlmostEqual(results[0].score, 0.9)
+
+
 class TestAddToDataDynamodb(unittest.TestCase):
     def test_correct_item_structure(self):
         table = MagicMock()
