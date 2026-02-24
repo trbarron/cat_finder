@@ -484,6 +484,96 @@ class TestButtonPressed(unittest.TestCase):
             # The ORIGINAL code prints this string when processing a button-triggered image
             self.assertIn("Processing button-triggered image", output)
 
+    def test_main_resets_button_flag_after_processing(self):
+        """Ensure main() clears the shared button_pressed_flag after processing.
+
+        We simulate a falling-edge callback that sets the flag to True. During
+        process_detection (which we patch), the flag is programmatically set to
+        False to emulate some concurrent change. The ORIGINAL main() sets the
+        flag to False after processing; the MUTANT toggles it (not flag) which
+        would leave it True in this scenario. We assert the final flag is False
+        to detect the mutant.
+        """
+        import cat_finder
+
+        # Capture the flag reference passed into button_pressed
+        captured_flag = []
+
+        # Keep original so our wrapper can call it
+        original_button_pressed = cat_finder.button_pressed
+
+        def patched_button_pressed(flag, lock, gpio, level, tick):
+            # Call original to set flag True on falling edge
+            original_button_pressed(flag, lock, gpio, level, tick)
+            # Store reference to the shared flag list so process_detection can modify it
+            captured_flag.append(flag)
+
+        def process_side_effect(*args, **kwargs):
+            # Simulate some concurrent operation during processing that clears the flag
+            if captured_flag:
+                captured_flag[0][0] = False
+            return None
+
+        # Provide required env vars and patch heavy dependencies similar to other main() tests
+        env = {
+            'AWS_ACCESS_KEY_ID': 'x',
+            'AWS_SECRET_ACCESS_KEY': 'y',
+            'AWS_REGION': 'z',
+            'DYNAMODB_DATA_TABLE_NAME': 'dt',
+            'DYNAMODB_URL_TABLE_NAME': 'ut',
+            'S3_BUCKET_NAME': 'bucket'
+        }
+
+        with patch.dict('os.environ', env, clear=True), \
+             patch('cat_finder.load_dotenv'), \
+             patch('cat_finder.boto3'), \
+             patch('cat_finder.IMX500') as mock_imx, \
+             patch('cat_finder.Picamera2') as mock_picam, \
+             patch('cat_finder.time.sleep', side_effect=KeyboardInterrupt), \
+             patch('cat_finder.button_pressed', new=patched_button_pressed), \
+             patch('cat_finder.process_detection', side_effect=process_side_effect) as mock_proc:
+
+            # Configure IMX500/network intrinsics mock used by main()
+            imx_instance = MagicMock()
+            intrinsics = MagicMock()
+            intrinsics.task = 'classification'
+            intrinsics.labels = ['neither', 'checo', 'tuni']
+            intrinsics.preserve_aspect_ratio = False
+            intrinsics.softmax = False
+            imx_instance.network_intrinsics = intrinsics
+            imx_instance.show_network_fw_progress_bar = MagicMock()
+            mock_imx.return_value = imx_instance
+
+            # Configure Picamera2 mock and a simple request
+            picam_instance = MagicMock()
+            picam_instance.create_preview_configuration.return_value = {}
+            request = MagicMock()
+            request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+            request.get_metadata.return_value = object()
+            request.save.return_value = None
+            request.release.return_value = None
+            picam_instance.capture_request.return_value = request
+            mock_picam.return_value = picam_instance
+
+            # Prepare pigpio.pi() mock: connected True and callback immediately invokes
+            pigpio_pi = MagicMock()
+            pigpio_pi.connected = True
+
+            def register_callback(pin, edge, cb):
+                # Simulate immediate falling edge event to set button flag via the registered lambda
+                cb(pin, 0, 0)
+                return MagicMock()
+
+            pigpio_pi.callback.side_effect = register_callback
+
+            with patch('cat_finder.pigpio.pi', return_value=pigpio_pi):
+                # Run main; time.sleep will raise KeyboardInterrupt to stop after one iteration
+                cat_finder.main()
+
+        # Ensure we captured the flag and that final value is False (original behavior)
+        self.assertTrue(captured_flag)
+        self.assertFalse(captured_flag[0][0])
+
 class TestProcessDetectionNeitherLabel(unittest.TestCase):
     def setUp(self):
         self.request = MagicMock()
