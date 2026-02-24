@@ -48,7 +48,7 @@ def run_mutahunter(
     package_dir: Path,
     source_file: str = "cat_finder.py",
     test_file: str = "test_cat_finder.py",
-    model: str = "gpt-4o-mini",
+    model: str = "gpt-5-mini",
 ) -> bool:
     """Run mutahunter to generate LLM-powered mutations."""
     print("\n" + "=" * 80)

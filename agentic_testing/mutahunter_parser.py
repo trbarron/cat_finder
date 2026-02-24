@@ -10,9 +10,41 @@ compatible with the triage pipeline.
 """
 
 import re
+import shutil
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 from typing import Any
+
+
+def _test_mutant_against_suite(
+    mutant_file: Path, source_file: Path, test_file: Path, package_dir: Path
+) -> bool:
+    """Run the test suite with a mutant swapped in. Returns True if the mutant is killed."""
+    # Back up original
+    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.py') as backup:
+        backup_path = Path(backup.name)
+        backup.write(source_file.read_text())
+
+    try:
+        shutil.copy2(mutant_file, source_file)
+
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", str(test_file), "-x", "-q"],
+            cwd=package_dir,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        return result.returncode != 0  # non-zero = tests failed = mutant killed
+
+    except Exception:
+        return False  # assume survived on error
+    finally:
+        shutil.copy2(backup_path, source_file)
+        backup_path.unlink()
 
 
 def parse_mutahunter_results(
@@ -56,41 +88,68 @@ def parse_mutahunter_results(
     # Parse debug.log to determine which mutants survived
     survived_mutants = set()
     killed_mutants = set()
+    tested_mutants = set()
 
     if debug_log.exists():
         log_content = debug_log.read_text()
-
-        # Extract test results for each mutant
-        # Mutahunter logs lines like: "Testing mutant: 009e1b04_cat_finder.py"
-        # Followed by: "PASSED" or "FAILED"
         lines = log_content.splitlines()
+
+        # Mutahunter log format:
+        #   INFO: 'pytest ...' - '/path/to/mutants/HASH_cat_finder.py'
+        #   INFO: Mutant killed / Mutant survived
         current_mutant = None
 
         for line in lines:
-            # Look for mutant testing lines
-            match = re.search(r"Testing mutant[:\s]+([a-f0-9]+)_", line)
-            if match:
-                current_mutant = match.group(1)
+            # Match the test command line that contains the mutant file path
+            path_match = re.search(r"INFO:.*mutants/([a-f0-9]+)_", line)
+            if path_match:
+                current_mutant = path_match.group(1)
                 continue
 
-            # Check test results
             if current_mutant:
-                # If tests pass with mutation, the mutant survived
-                if "PASSED" in line or "passed" in line.lower():
-                    # Check if it's the final result (not individual test passes)
-                    if re.search(r"\d+\s+passed", line, re.IGNORECASE):
-                        survived_mutants.add(current_mutant)
-                        current_mutant = None
-                elif "FAILED" in line or "failed" in line.lower():
-                    if re.search(r"\d+\s+failed", line, re.IGNORECASE):
-                        killed_mutants.add(current_mutant)
-                        current_mutant = None
+                if "Mutant killed" in line:
+                    killed_mutants.add(current_mutant)
+                    tested_mutants.add(current_mutant)
+                    current_mutant = None
+                elif "Mutant survived" in line:
+                    survived_mutants.add(current_mutant)
+                    tested_mutants.add(current_mutant)
+                    current_mutant = None
 
-    # If we can't determine from logs, assume all survived (conservative approach)
-    if not survived_mutants and not killed_mutants:
-        print("Warning: Could not determine mutant status from logs")
-        print("Assuming all mutants survived (conservative approach)")
-        survived_mutants = {f.stem.split("_")[0] for f in mutant_files}
+    # For mutant files that were generated but never tested (e.g. mutahunter
+    # crashed partway through), run tests against them now to determine status.
+    all_hashes = {f.stem.split("_")[0] for f in mutant_files}
+    untested = all_hashes - tested_mutants
+
+    if untested:
+        print(f"  Tested by mutahunter: {len(tested_mutants)}")
+        print(f"  Untested: {len(untested)} -- running tests now...")
+        test_file_path = package_dir / "test_cat_finder.py"
+        untested_killed = 0
+        untested_survived = 0
+
+        for i, mhash in enumerate(sorted(untested), 1):
+            # Find the mutant file for this hash
+            matching = [f for f in mutant_files if f.stem.split("_")[0] == mhash]
+            if not matching:
+                continue
+            mfile = matching[0]
+
+            killed = _test_mutant_against_suite(mfile, package_dir / source_file, test_file_path, package_dir)
+            if killed:
+                killed_mutants.add(mhash)
+                untested_killed += 1
+            else:
+                survived_mutants.add(mhash)
+                untested_survived += 1
+
+            if i % 20 == 0:
+                print(f"    ... tested {i}/{len(untested)} (killed: {untested_killed}, survived: {untested_survived})")
+
+        print(f"  Untested results: {untested_killed} killed, {untested_survived} survived")
+
+    if not tested_mutants and not untested:
+        print("Warning: No mutant files or log entries found")
 
     print(f"  Survived: {len(survived_mutants)}")
     print(f"  Killed:   {len(killed_mutants)}")
@@ -105,6 +164,7 @@ def parse_mutahunter_results(
 
     original_content = original_source.read_text()
 
+    syntax_errors = 0
     for mutant_file in mutant_files:
         mutant_hash = mutant_file.stem.split("_")[0]
 
@@ -113,6 +173,15 @@ def parse_mutahunter_results(
             continue
 
         mutant_content = mutant_file.read_text()
+
+        # Syntax check: compile the mutant to catch invalid mutations
+        try:
+            compile(mutant_content, str(mutant_file), "exec")
+        except SyntaxError:
+            syntax_errors += 1
+            # Remove the broken mutant file so it doesn't waste time in future runs
+            mutant_file.unlink()
+            continue
 
         # Generate diff
         diff = generate_diff(original_content, mutant_content, source_file, mutant_hash)
@@ -132,6 +201,8 @@ def parse_mutahunter_results(
 
         mutant_entries.append(entry)
 
+    if syntax_errors:
+        print(f"  Syntax errors: {syntax_errors} (deleted)")
     print(f"Returning {len(mutant_entries)} survived mutant(s) for triage")
     return mutant_entries
 

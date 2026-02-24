@@ -126,7 +126,7 @@ def build_llm_prompt(entry: dict) -> str:
 
 **CRITICAL: Carefully check WHERE the mutation occurs.** Look at the diff closely:
 - If the changed line is INSIDE a print(), logging, logger, or warning call, it is a display-only change — do NOT recommend a test, even if the change involves arithmetic or variable substitution within the message string.
-- If the mutation changes an argument to print/log (e.g. `print(f"...{{len(x) - 1}}")` → `print(f"...{{len(x) + 1}}")"`), that is still just a logging change. The arithmetic change is inside the log message, NOT in business logic.
+- If the mutation changes an argument to print/log (e.g. `print(f"...{{len(x) - 1}}")` becomes `print(f"...{{len(x) + 1}}")"`), that is still just a logging change. The arithmetic change is inside the log message, NOT in business logic.
 - Only flag arithmetic or logic changes when they affect a **return value, assignment, conditional, or function argument that controls program behavior** — NOT when they only affect what gets printed.
 
 Do NOT recommend tests for:

@@ -23,10 +23,12 @@ python3 -m agentic_testing.cli --mutation-engine mutahunter
 ## How It Works
 
 1. **Mutation Generation**: Runs mutmut (rule-based) or mutahunter (LLM-powered)
-2. **LLM Triage**: Analyzes survived mutants to filter out false positives
-3. **Test Generation**: Uses LLM to generate targeted tests
-4. **Self-Correction**: Automatically fixes failed tests (up to 3 iterations)
-5. **Verification**: Runs tests to confirm mutants are killed
+2. **Mutant Testing**: Parser runs the test suite against each mutant to determine killed vs survived (including any untested mutants from incomplete mutahunter runs)
+3. **LLM Triage**: Analyzes survived mutants to filter out false positives (uses gpt-4o-mini)
+4. **Pre-Filter**: Bulk-checks all mutants against existing tests upfront, skipping already-killed ones
+5. **Test Generation**: Uses gpt-5-mini to generate targeted tests with full source context
+6. **Self-Correction**: Automatically fixes failed tests with full traceback context (up to 5 iterations, uses gpt-5-mini)
+7. **Verification**: Confirms tests pass with original code and fail with mutant code
 
 ## Setup
 
@@ -51,7 +53,7 @@ sed -i '' '51 a\
         self.unexpected_test_error_mutants = 0
 ' ./venv/lib/python3.11/site-packages/mutahunter/core/controller.py
 
-echo "✓ Setup complete!"
+echo "Setup complete!"
 ```
 
 ### Environment Variables
@@ -107,27 +109,69 @@ python3 -m agentic_testing.cli --mutation-engine mutahunter
 ## Architecture
 
 ```
-cli.py              # Main entry point
-├── run_mutmut.py   # Mutation generation wrapper
-├── triage.py       # LLM-powered mutant triage
-├── agent_loop.py   # Main orchestration loop
-├── test_generator.py    # Generate tests via LLM
-├── test_fixer.py        # Fix failed tests (iteration)
-├── error_extractor.py   # Parse pytest errors
-├── test_applier.py      # Apply tests to files
-└── verifier.py          # Verify mutants are killed
+cli.py                  # Main entry point
+|-- run_mutahunter.py   # Mutahunter wrapper (sets LITELLM_DROP_PARAMS for gpt-5 compat)
+|-- mutahunter_parser.py # Parse results, syntax-check mutants, test untested mutants
+|-- triage.py           # LLM triage (gpt-4o-mini)
+|-- agent_loop.py       # Main loop with bulk pre-filter and per-mutant processing
+|-- test_generator.py   # Generate tests via LLM (gpt-5-mini, full source context)
+|-- test_fixer.py       # Fix failed tests with full traceback (gpt-5-mini)
+|-- error_extractor.py  # Parse pytest errors
+|-- test_applier.py     # Apply/remove tests (allows stdlib imports, blocks source imports)
+|-- verifier.py         # Verify mutants are killed
 ```
 
-## Self-Correcting Iteration
+## LLM Models
 
-When a generated test fails:
-1. Extract error from pytest output
-2. Pass error to LLM with context
+| Component | Model | Why |
+|-----------|-------|-----|
+| Triage | gpt-4o-mini | Simple yes/no classification, cost-effective |
+| Test generation | gpt-5-mini | Hardest task, needs to write correct mock-heavy tests |
+| Test fixer | gpt-5-mini | Needs to understand errors + code together |
+| Mutahunter | gpt-5-mini | Mutation generation (via LITELLM_DROP_PARAMS=true) |
+
+Note: gpt-5-mini only supports temperature=1. The `LITELLM_DROP_PARAMS` env var is set when running mutahunter to drop unsupported parameters.
+
+## Pipeline Details
+
+### Mutant Parsing and Testing
+
+The mutahunter parser (`mutahunter_parser.py`):
+1. Reads mutant files from `logs/_latest/mutants/`
+2. Parses `debug.log` for killed/survived status (matches "Mutant killed"/"Mutant survived" lines)
+3. **Syntax-checks** each mutant file with `compile()` -- deletes invalid ones from disk
+4. **Tests untested mutants** against the current test suite (handles incomplete mutahunter runs)
+5. Returns only genuine survivors for triage
+
+### Bulk Pre-Filter
+
+Before the main loop starts, all mutants are checked against existing tests in bulk. This:
+- Eliminates stale mutants that the current test suite already kills
+- Warns if ALL mutants are already killed (stale mutant list)
+- Re-checks during the loop in case a newly written test kills later mutants
+
+### Self-Correcting Iteration
+
+When a generated test fails verification:
+1. Extract full traceback from pytest output
+2. Pass traceback + test code + source to LLM fixer
 3. LLM generates fixed test
 4. Apply and verify again
-5. Repeat up to 3 times
+5. Repeat up to 5 times, then roll back
 
-Success rate: ~90% after 3 iterations
+### Test Applier Rules
+
+- Stdlib imports (`import threading`, `from uuid import UUID`, etc.) are **allowed** inside test methods
+- `import cat_finder` is **allowed** (for accessing `cat_finder.main()`, etc.)
+- `from cat_finder import ...` is **blocked** (should be at top of file where hardware mocks are set up)
+
+### Summary Output
+
+The loop tracks all outcome types:
+- **Already killed**: Mutant killed by existing tests (pre-filter or during loop)
+- **New tests written**: Successfully generated and verified tests
+- **Verification failed**: Test generation failed after max attempts (rolled back)
+- **Effective kill rate**: (success + already_killed) / total
 
 ## LLM Triage Filters
 
@@ -143,39 +187,26 @@ Only generates tests for real logic bugs.
 
 - `requirements.txt` - Python dependencies
 - `venv/` - Virtual environment (isolated dependencies)
-- `.agentic_testing_cache/` - Cached results and metadata
+- `.agentic_testing_cache/` - Cached results, triage, and logs
 
 ## Mutation Engines Comparison
 
 | Feature | mutmut | mutahunter |
 |---------|--------|------------|
-| **Speed** | ⚡ Fast (seconds) | 🐢 Slower (minutes) |
+| **Speed** | Fast (seconds) | Slower (minutes) |
 | **Mutations** | Rule-based (syntax) | LLM-powered (semantic) |
 | **Setup** | Simple | Requires Python 3.11 + fix |
 | **Cost** | Free | ~$0.01-0.05 per file |
 | **Use Case** | Quick iteration | Realistic bugs |
 
-**When to use mutmut:**
-- Fast development iterations
-- Large codebases
-- Cost is a concern
-
-**When to use mutahunter:**
-- Finding realistic, semantic bugs
-- Security-critical code
-- Final validation before release
-
-## Future Enhancements
-
-- **Multi-file Support**: Generate tests across multiple test files
-- **Coverage Integration**: Track mutation coverage improvements
-- **Upstream Contribution**: Submit mutahunter bug fix to maintainers
-
 ## Troubleshooting
 
 **Tests failing after generation?**
-- The self-correction loop should fix most issues automatically
+- The self-correction loop should fix most issues automatically (up to 5 attempts)
 - Use `--dry-run` to preview without applying changes
+
+**All mutants already killed?**
+- The mutant list is stale. Re-run without `--skip-mutmut` to generate fresh mutations.
 
 **No mutants found?**
 - Ensure tests are passing first: `pytest test_cat_finder.py`
@@ -184,6 +215,10 @@ Only generates tests for real logic bugs.
 **LLM errors?**
 - Verify `OPENAI_API_KEY` is set correctly in `.env`
 - Check API rate limits and quotas
+- For gpt-5-mini temperature errors with mutahunter, ensure `LITELLM_DROP_PARAMS=true` is set (handled automatically by `run_mutahunter.py`)
+
+**Stale bytecode?**
+- If you see `NameError` after editing files, clear the cache: `rm -rf agentic_testing/__pycache__`
 
 ## References
 

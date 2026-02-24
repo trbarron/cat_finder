@@ -190,15 +190,25 @@ def remove_test(
         return (False, f"Error writing test file: {e}")
 
 
-def get_imports_from_code(code: str) -> set[str]:
-    """Extract import statements from code."""
-    import re
-    imports = set()
+def get_source_imports_from_code(code: str, source_module: str = "cat_finder") -> set[str]:
+    """Extract problematic import statements from test method code.
+
+    Allowed:
+    - Stdlib imports (threading, datetime, uuid, etc.)
+    - `import cat_finder` (bare module import -- harmless, sometimes needed
+      for cat_finder.main() or cat_finder.REQUIRED_ENV_VARS)
+
+    Blocked:
+    - `from cat_finder import ...` -- these grab fresh references and should
+      live at the top of the test file where hardware mocks are set up first.
+    """
+    bad_imports = set()
     for line in code.split('\n'):
         line = line.strip()
-        if line.startswith('import ') or line.startswith('from '):
-            imports.add(line)
-    return imports
+        # Block "from cat_finder import ..." but allow "import cat_finder"
+        if line.startswith(f'from {source_module}'):
+            bad_imports.add(line)
+    return bad_imports
 
 
 def apply_test(
@@ -212,10 +222,9 @@ def apply_test(
     """
     Apply a generated test to a test file.
 
-    Note: Currently, test_method_code should only contain the method definition,
-    not any import statements. All necessary imports should already exist at the
-    top of the test file. If new imports are needed in the future, we'll need
-    to add import tracking and rollback logic.
+    Stdlib imports (threading, uuid, datetime, etc.) inside test methods are
+    allowed. Only imports of the module under test (cat_finder) are blocked,
+    since those should already exist at the top of the test file.
 
     Args:
         test_file_path: Path to the test file
@@ -236,11 +245,11 @@ def apply_test(
     except Exception as e:
         return (False, f"Error reading test file: {e}")
 
-    # Check if test_method_code contains any imports (it shouldn't)
-    test_imports = get_imports_from_code(test_method_code)
-    if test_imports:
-        return (False, f"Test method should not contain imports. Found: {test_imports}. "
-                       f"All imports should be at the top of the test file.")
+    # Block imports of the source module under test (stdlib imports are fine)
+    bad_imports = get_source_imports_from_code(test_method_code)
+    if bad_imports:
+        return (False, f"Test method should not import the source module. Found: {bad_imports}. "
+                       f"Source module imports should be at the top of the test file.")
 
     # If replacing, remove the old method first
     if replace:

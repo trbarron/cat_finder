@@ -3,8 +3,8 @@
 Main agentic loop for LLM-powered mutation testing.
 
 Inspired by Meta's ACH (Automated Compliance Hardening):
-1. Run mutmut → identify survived mutants
-2. LLM triages mutants → filters out non-critical ones
+1. Run mutmut to identify survived mutants
+2. LLM triages mutants and filters out non-critical ones
 3. LLM generates test code for critical mutations
 4. Apply tests to test files
 5. Verify tests work
@@ -124,15 +124,21 @@ Result for {mutant_id}:
 
     def log_summary(self, summary: dict):
         """Log final summary."""
+        effective_kills = summary.get('success', 0) + summary.get('already_killed', 0)
+        total = summary['total']
         msg = f"""
 {'='*80}
 FINAL SUMMARY
 {'='*80}
-Total processed: {summary['total']}
-  Success:  {summary['success']}
-  Errors:   {summary['error']}
-  Skipped:  {summary['skipped']}
-  Rejected: {summary['rejected']}
+Total processed:      {total}
+  Already killed:     {summary.get('already_killed', 0)}
+  New tests written:  {summary.get('success', 0)}
+  Verification failed:{summary.get('verification_failed', 0)}
+  Errors:             {summary.get('error', 0)}
+  Skipped:            {summary.get('skipped', 0)}
+  Rejected:           {summary.get('rejected', 0)}
+  ---
+  Effective kill rate: {effective_kills}/{total} ({effective_kills*100//total if total else 0}%)
 """
         self.log(msg)
 
@@ -219,10 +225,15 @@ def process_mutant(
 
     existing_test_content = test_file_path.read_text()
 
-    # Get source snippet for better context
+    # Get source context for LLM
     source_snippet = mutant_entry.get("source_snippet", "")
     diff = mutant_entry.get("diff", "")
     full_source_context = f"{diff}\n\n{source_snippet}" if diff and source_snippet else (source_snippet or diff or "")
+
+    # Read full source file for richer LLM context
+    source_file_name = mutant_entry.get("source_file", "cat_finder.py")
+    source_file_path = package_dir / source_file_name
+    full_source = source_file_path.read_text() if source_file_path.exists() else ""
 
     # Iteration loop: try to generate and fix test up to max_iterations times
     test_class = None
@@ -240,7 +251,8 @@ def process_mutant(
             print(f"   Agent prompt: {agent_prompt[:100]}...")
 
             test_result = generate_test_code(
-                agent_prompt, test_file_path, existing_test_content, api_key, full_source_context
+                agent_prompt, test_file_path, existing_test_content, api_key, full_source_context,
+                full_source=full_source
             )
         else:
             # Iteration > 1: Fix the failed test
@@ -351,10 +363,12 @@ def process_mutant(
                     "iterations": iteration,
                 }
             else:
-                print(f"   ✗ Verification failed")
-                # Extract error for next iteration
+                print(f"   FAIL: Verification failed")
+                # Extract error for next iteration - pass full trace for better LLM context
                 error_info = extract_pytest_error(verify_msg)
-                error_message = error_info.get("error_message", verify_msg)
+                full_trace = error_info.get("full_trace", "")
+                short_error = error_info.get("error_message", "")
+                error_message = full_trace if full_trace else (short_error if short_error else verify_msg)
 
                 # Show concise error
                 if "FAILED against original" in verify_msg:
@@ -366,7 +380,7 @@ def process_mutant(
 
                 if iteration == max_iterations:
                     # Exhausted all attempts - roll back the test
-                    print(f"\n   ✗ Exhausted {max_iterations} attempts. Rolling back test...")
+                    print(f"\n   FAIL: Exhausted {max_iterations} attempts. Rolling back test...")
 
                     from .test_applier import remove_test
 
@@ -375,9 +389,9 @@ def process_mutant(
                     )
 
                     if rollback_success:
-                        print(f"   ✓ Test rolled back successfully")
+                        print(f"   OK: Test rolled back successfully")
                     else:
-                        print(f"   ✗ Failed to roll back test: {rollback_msg}")
+                        print(f"   FAIL: Failed to roll back test: {rollback_msg}")
 
                     return {
                         "mutant_id": mutant_id,
@@ -388,7 +402,7 @@ def process_mutant(
                         "rollback_success": rollback_success,
                     }
 
-                print(f"   → Attempting to fix the test...")
+                print(f"   Attempting to fix the test...")
         else:
             # Dry run - consider it a success
             return {
@@ -445,11 +459,11 @@ def run_agent_loop(
     print(f"{'='*80}")
 
     # Sanity check: verify tests pass before we start
-    print("\n→ Running sanity check: verifying all tests pass...")
+    print("\nRunning sanity check: verifying all tests pass...")
     tests_pass, test_output = check_tests_pass(package_dir)
 
     if not tests_pass:
-        print("✗ SANITY CHECK FAILED: Tests are already broken!")
+        print("FAIL: SANITY CHECK FAILED: Tests are already broken!")
         print("\nTest output (last 500 chars):")
         print(test_output[-500:])
         print("\nPlease fix the tests before running the agentic loop.")
@@ -463,19 +477,54 @@ def run_agent_loop(
             "sanity_check_failed": True,
         }
 
-    print("✓ Sanity check passed - all tests passing\n")
+    print("OK: Sanity check passed - all tests passing\n")
 
-    results = []
-    for i, mutant_entry in enumerate(triage_results):
+    # Bulk pre-filter: check which mutants are already killed by existing tests
+    # This avoids wasting time on mutants the current test suite already handles
+    already_killed_results = []
+    remaining_triage = []
+
+    if mutation_engine == "mutahunter":
+        from .verifier import _verify_mutahunter_mutant
+        test_file_path = package_dir / "test_cat_finder.py"
+
+        print(f"Pre-filtering: checking {len(triage_results)} mutant(s) against existing tests...")
+        for entry in triage_results:
+            mid = entry.get("mutant_id", "unknown")
+            mfile = entry.get("mutant_file")
+            if mfile:
+                killed, _ = _verify_mutahunter_mutant(mid, mfile, test_file_path, package_dir)
+                if killed:
+                    already_killed_results.append({
+                        "mutant_id": mid,
+                        "status": "already_killed",
+                        "reason": "Killed by existing tests (pre-filter)",
+                    })
+                    logger.log_result(mid, "already_killed", "Killed by existing tests (pre-filter)")
+                    continue
+            remaining_triage.append(entry)
+
+        filtered = len(already_killed_results)
+        print(f"Pre-filter complete: {filtered} already killed, {len(remaining_triage)} remaining\n")
+
+        if remaining_triage == [] and filtered > 0:
+            print("WARNING: ALL mutants are already killed by existing tests.")
+            print("The mutant list is likely stale (generated from an older test suite).")
+            print("Re-run the full pipeline without --skip-mutmut to generate fresh mutations.\n")
+    else:
+        remaining_triage = triage_results
+
+    results = list(already_killed_results)
+    for i, mutant_entry in enumerate(remaining_triage):
         mutant_id = mutant_entry.get("mutant_id", "unknown")
-        logger.log_mutant_start(mutant_id, i + 1, len(triage_results))
+        logger.log_mutant_start(mutant_id, i + 1, len(remaining_triage))
 
         # Sanity check before each mutant: verify tests still pass
-        print(f"→ Sanity check: verifying all tests pass...")
+        print(f"Sanity check: verifying all tests pass...")
         tests_pass, test_output = check_tests_pass(package_dir)
 
         if not tests_pass:
-            print(f"✗ Sanity check failed before processing {mutant_id}!")
+            print(f"FAIL: Sanity check failed before processing {mutant_id}!")
             print("Tests are broken, likely from a previous mutation.")
             print("\nStopping to prevent further damage.")
             results.append({
@@ -485,30 +534,25 @@ def run_agent_loop(
             })
             break
 
-        print(f"✓ All tests pass")
+        print(f"OK: All tests pass")
 
-        # Check if this mutant is already killed by existing tests
-        print(f"→ Checking if mutant is already killed by existing tests...")
+        # Re-check this mutant in case a test written earlier in this run now kills it
         mutant_file_path = mutant_entry.get("mutant_file") if mutation_engine == "mutahunter" else None
 
         if mutation_engine == "mutahunter" and mutant_file_path:
-            from .verifier import _verify_mutahunter_mutant
             test_file_path = package_dir / "test_cat_finder.py"
-
-            # Run existing tests against this mutant
             already_killed, msg = _verify_mutahunter_mutant(
                 mutant_id, mutant_file_path, test_file_path, package_dir
             )
 
             if already_killed:
-                print(f"✓ Mutant already killed by existing tests - skipping")
-                print(f"  (A test from a previous mutant already kills this one)")
+                print(f"OK: Mutant now killed by a test written earlier in this run - skipping")
                 results.append({
                     "mutant_id": mutant_id,
                     "status": "already_killed",
-                    "reason": "Mutant already killed by existing tests (likely from previous mutation)",
+                    "reason": "Killed by test written earlier in this run",
                 })
-                logger.log_result(mutant_id, "already_killed", "Killed by previous test")
+                logger.log_result(mutant_id, "already_killed", "Killed by test written earlier in this run")
                 continue
 
         result = process_mutant(
@@ -537,20 +581,29 @@ def run_agent_loop(
     print(f"{'='*80}")
 
     success_count = sum(1 for r in results if r["status"] == "success")
+    already_killed_count = sum(1 for r in results if r["status"] == "already_killed")
+    verification_failed_count = sum(1 for r in results if r["status"] == "verification_failed")
     error_count = sum(1 for r in results if r["status"] == "error")
     skipped_count = sum(1 for r in results if r["status"] == "skipped")
     rejected_count = sum(1 for r in results if r["status"] == "rejected")
 
     total = len(results)
-    print(f"Processed:  {total}")
-    print(f"  Success:  {success_count:3d} ({success_count*100//total if total else 0}%)")
-    print(f"  Errors:   {error_count:3d}")
-    print(f"  Skipped:  {skipped_count:3d}")
-    print(f"  Rejected: {rejected_count:3d}")
+    effective_kills = success_count + already_killed_count
+    print(f"Processed:            {total}")
+    print(f"  Already killed:     {already_killed_count:3d}")
+    print(f"  New tests written:  {success_count:3d}")
+    print(f"  Verification failed:{verification_failed_count:3d}")
+    print(f"  Errors:             {error_count:3d}")
+    print(f"  Skipped:            {skipped_count:3d}")
+    print(f"  Rejected:           {rejected_count:3d}")
+    print(f"  ---")
+    print(f"  Effective kill rate: {effective_kills}/{total} ({effective_kills*100//total if total else 0}%)")
 
     summary = {
         "total": len(results),
         "success": success_count,
+        "already_killed": already_killed_count,
+        "verification_failed": verification_failed_count,
         "error": error_count,
         "skipped": skipped_count,
         "rejected": rejected_count,

@@ -9,8 +9,8 @@ import urllib.request
 from pathlib import Path
 
 
-LLM_MODEL = "gpt-4o-mini"  # Using GPT-4o mini for cost-effectiveness
-LLM_TEMPERATURE = 0.2  # Lower temperature for more deterministic code generation
+LLM_MODEL = "gpt-5-mini"
+LLM_TEMPERATURE = 1  # gpt-5-mini only supports temperature=1
 LLM_API_URL = "https://api.openai.com/v1/chat/completions"
 
 
@@ -20,6 +20,7 @@ def generate_test_code(
     existing_test_content: str,
     api_key: str,
     source_snippet: str = "",
+    full_source: str = "",
 ) -> dict:
     """
     Generate test code using LLM based on the agent_prompt from triage.
@@ -53,8 +54,8 @@ Your test should assert the CORRECT behavior (what the original code does), NOT 
 - Mutant code: `return x <= 10`
 - To kill this mutant, test with x=10:
   - Assert False (because 10 < 10 is False in original)
-  - This passes with original (10 < 10 = False ✓)
-  - This fails with mutant (10 <= 10 = True ✗) → MUTANT KILLED
+  - This passes with original (10 < 10 = False -- PASS)
+  - This fails with mutant (10 <= 10 = True -- FAIL) => MUTANT KILLED
 
 Given:
 1. A description of what mutation survived
@@ -84,22 +85,85 @@ Requirements:
 - **ALWAYS assert the ORIGINAL code's behavior, not the mutant's behavior**
 - **ALWAYS use an EXISTING test class from the test file - NEVER create a new class**
 - If the agent_prompt suggests a new class, choose the most appropriate existing class instead
+
+**COMMON MOCK PATTERNS - follow these exactly:**
+
+1. **Accessing call_args from mock:**
+   - `call_args[1]` gives keyword arguments, `call_args[0]` gives positional arguments
+   - Example: `table.put_item.call_args[1]['Item']` gets the Item kwarg from put_item(Item={...})
+   - NEVER do `call_args[0]` then index with string keys - that's positional args, not kwargs
+
+2. **Patching functions correctly:**
+   - When patching, patch where the function is USED, not where it's defined
+   - If you patch 'cat_finder.process_detection', calling process_detection() directly still calls the REAL function (you imported it). The mock only intercepts calls made through the cat_finder module namespace.
+   - To test a function's behavior, call it directly with mocked dependencies - don't patch the function itself
+
+3. **Testing process_detection - follow this pattern from the existing tests:**
+```python
+def test_example(self):
+    self.request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+    self.imx500.get_outputs.return_value = [np.array([[0.05, 0.90, 0.05]])]
+
+    result = process_detection(
+        self.request, self.imx500, self.intrinsics,
+        self.data_table, self.url_table, self.s3_client,
+        self.labels, s3_bucket="bucket",
+        previous_label="checo", darkness_threshold=30
+    )
+    self.assertEqual(result, "checo")
+    self.data_table.put_item.assert_called_once()
+```
+
+4. **Testing add_to_data_dynamodb:**
+   - Signature: `add_to_data_dynamodb(dynamodb_table, timestamp, image_name, cat_label, cat_confidence)`
+   - These are positional args, not kwargs. Assert on the Item dict in put_item.
+
+5. **Testing button_pressed:**
+   - Signature: `button_pressed(button_pressed_flag, button_press_lock, gpio, level, tick)`
+   - flag is a list like [False], lock is a threading.Lock()
+   - Test by passing real flag/lock and asserting flag[0] after the call
+
+6. **Stdlib imports (threading, uuid, datetime, etc.) ARE allowed inside test methods.**
+   - Only imports of the module under test (cat_finder) are blocked.
 """
 
     source_context = ""
-    if source_snippet:
+    if full_source:
         source_context = f"""
-**Source code being tested (for reference):**
+**Full source file (cat_finder.py):**
+```python
+{full_source}
+```
+"""
+    elif source_snippet:
+        source_context = f"""
+**Source code around the mutation:**
 ```python
 {source_snippet}
 ```
 """
+
+    # Extract imports section from test file to highlight what's available
+    import_lines = []
+    for line in existing_test_content.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("import ") or stripped.startswith("from "):
+            import_lines.append(stripped)
+        elif stripped.startswith("class ") and import_lines:
+            break  # stop at first class definition
+
+    imports_note = "\n".join(f"  - {imp}" for imp in import_lines)
 
     user_prompt = f"""**Agent prompt (what to test):**
 {agent_prompt}
 
 **Test file to modify:** {test_file_path}
 {source_context}
+**Already imported in the test file (DO NOT re-import these):**
+{imports_note}
+
+`import cat_finder` is allowed inside test methods if you need to access `cat_finder.main()` or other module-level attributes. `from cat_finder import ...` is NOT allowed inside test methods.
+
 **Existing test file content:**
 ```python
 {existing_test_content}
