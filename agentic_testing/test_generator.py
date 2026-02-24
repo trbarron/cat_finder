@@ -21,6 +21,7 @@ def generate_test_code(
     api_key: str,
     source_snippet: str = "",
     full_source: str = "",
+    mutation_diff: str = "",
 ) -> dict:
     """
     Generate test code using LLM based on the agent_prompt from triage.
@@ -125,6 +126,51 @@ def test_example(self):
 
 6. **Stdlib imports (threading, uuid, datetime, etc.) ARE allowed inside test methods.**
    - Only imports of the module under test (cat_finder) are blocked.
+
+7. **NEVER use source inspection as a test strategy:**
+   - NEVER use `inspect.getsource()` to check source code text
+   - NEVER assert that a specific string exists in the source code
+   - Tests must verify BEHAVIOR (call the function, check the result/side effects), not source text
+   - Source inspection tests are fragile, don't test real behavior, and will be rejected
+
+8. **Module-level constants vs function parameter defaults:**
+   - If a mutant changes a module-level constant (e.g., `DARKNESS_THRESHOLD = 69`), your test must exercise the code path that USES that constant (e.g., `main()` or `process_detection()` which passes it explicitly)
+   - Do NOT call a function without arguments and assume it uses the module constant -- check the function signature for its actual default value
+   - Example: `is_image_too_dark(request)` uses default=30 from the function signature, NOT the module-level `DARKNESS_THRESHOLD=69`
+
+9. **Don't duplicate existing test coverage:**
+   - Before writing a new test, carefully review the existing tests provided below
+   - If an existing test already exercises the SAME code branch / condition that the mutant changes, your new test must use a DIFFERENT input or assertion strategy that specifically distinguishes original from mutant behavior
+   - Ask yourself: "Would the existing test already fail if this mutant were applied?" If yes, the mutant is likely already killed and a new test won't help
+   - Example: If existing tests already cover `not os.getenv(var)` with missing env vars (None), adding a test with empty strings ('') doesn't help -- both are falsy and hit the same branch
+   - Focus on the EXACT boundary the mutant changes (e.g., `<` vs `<=`, `>=` vs `>`) and pick an input that sits exactly on that boundary
+"""
+
+    # Format mutation diff as clear before/after
+    diff_context = ""
+    if mutation_diff:
+        before_lines = []
+        after_lines = []
+        for line in mutation_diff.splitlines():
+            if line.startswith("---") or line.startswith("+++") or line.startswith("@@"):
+                continue
+            if line.startswith("-") and not line.startswith("---"):
+                before_lines.append(line[1:].strip())
+            elif line.startswith("+") and not line.startswith("+++"):
+                after_lines.append(line[1:].strip())
+
+        if before_lines or after_lines:
+            diff_context = f"""
+**EXACT MUTATION (this is what your test must distinguish):**
+- ORIGINAL code (correct): `{' | '.join(before_lines)}`
+- MUTANT code (incorrect):  `{' | '.join(after_lines)}`
+
+Your test MUST pick an input where the original code produces a DIFFERENT result than the mutant code.
+
+**Full diff:**
+```diff
+{mutation_diff}
+```
 """
 
     source_context = ""
@@ -154,7 +200,8 @@ def test_example(self):
 
     imports_note = "\n".join(f"  - {imp}" for imp in import_lines)
 
-    user_prompt = f"""**Agent prompt (what to test):**
+    user_prompt = f"""{diff_context}
+**Agent prompt (what to test):**
 {agent_prompt}
 
 **Test file to modify:** {test_file_path}
@@ -192,7 +239,7 @@ Generate a new test method that kills this mutant. Output JSON only.
             method="POST",
         )
 
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read().decode())
 
         text = data.get("choices", [{}])[0].get("message", {}).get("content", "")

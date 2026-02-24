@@ -139,6 +139,12 @@ Do NOT recommend tests for:
 
 Only recommend a test if the mutation changes a **return value, a stored value (e.g. database entry), a control flow decision, or an externally visible side effect** in a way that would be wrong.
 
+**CRITICAL: Check if existing tests already cover the mutated branch.**
+- Look at the test file content provided below. If an existing test already exercises the SAME code path / condition that the mutant changes, a new test is unlikely to help — the mutant survived because the existing test's assertions don't distinguish original from mutant, and a duplicate test with similar inputs won't either.
+- Only recommend a new test if you can identify a SPECIFIC input that sits on the exact boundary the mutant changes (e.g., for `<` vs `<=`, an input equal to the threshold).
+- If the mutant changes a module-level constant (e.g., `DARKNESS_THRESHOLD = 69`), check whether any test actually exercises the code path that USES that constant. If the function has its own default parameter value, tests calling the function directly may not use the constant at all.
+- Do NOT recommend tests that would be equivalent to existing ones (same branch, same kind of falsy/truthy input, same assertions).
+
 **Mutant ID:** {entry["mutant_id"]}
 
 **What the mutation did (diff):**

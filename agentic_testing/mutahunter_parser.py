@@ -48,7 +48,8 @@ def _test_mutant_against_suite(
 
 
 def parse_mutahunter_results(
-    package_dir: Path, source_file: str = "cat_finder.py"
+    package_dir: Path, source_file: str = "cat_finder.py", max_survived: int = 30,
+    phase_logger=None,
 ) -> list[dict[str, Any]]:
     """
     Parse mutahunter results and extract survived mutants.
@@ -84,6 +85,8 @@ def parse_mutahunter_results(
         return []
 
     print(f"Found {len(mutant_files)} mutant file(s)")
+    if phase_logger:
+        phase_logger.log_parsing(f"Found {len(mutant_files)} mutant file(s) in {mutants_dir}")
 
     # Parse debug.log to determine which mutants survived
     survived_mutants = set()
@@ -124,29 +127,42 @@ def parse_mutahunter_results(
     if untested:
         print(f"  Tested by mutahunter: {len(tested_mutants)}")
         print(f"  Untested: {len(untested)} -- running tests now...")
-        test_file_path = package_dir / "test_cat_finder.py"
-        untested_killed = 0
-        untested_survived = 0
+        total_survived_so_far = len(survived_mutants)
+        if total_survived_so_far >= max_survived:
+            print(f"  Already have {total_survived_so_far} survived mutants (>= {max_survived}), skipping untested")
+        else:
+            test_file_path = package_dir / "test_cat_finder.py"
+            untested_killed = 0
+            untested_survived = 0
+            skipped = 0
 
-        for i, mhash in enumerate(sorted(untested), 1):
-            # Find the mutant file for this hash
-            matching = [f for f in mutant_files if f.stem.split("_")[0] == mhash]
-            if not matching:
-                continue
-            mfile = matching[0]
+            for i, mhash in enumerate(sorted(untested), 1):
+                # Find the mutant file for this hash
+                matching = [f for f in mutant_files if f.stem.split("_")[0] == mhash]
+                if not matching:
+                    continue
+                mfile = matching[0]
 
-            killed = _test_mutant_against_suite(mfile, package_dir / source_file, test_file_path, package_dir)
-            if killed:
-                killed_mutants.add(mhash)
-                untested_killed += 1
-            else:
-                survived_mutants.add(mhash)
-                untested_survived += 1
+                killed = _test_mutant_against_suite(mfile, package_dir / source_file, test_file_path, package_dir)
+                if killed:
+                    killed_mutants.add(mhash)
+                    untested_killed += 1
+                else:
+                    survived_mutants.add(mhash)
+                    untested_survived += 1
 
-            if i % 20 == 0:
-                print(f"    ... tested {i}/{len(untested)} (killed: {untested_killed}, survived: {untested_survived})")
+                if i % 20 == 0:
+                    print(f"    ... tested {i}/{len(untested)} (killed: {untested_killed}, survived: {untested_survived})")
 
-        print(f"  Untested results: {untested_killed} killed, {untested_survived} survived")
+                if len(survived_mutants) >= max_survived:
+                    skipped = len(untested) - i
+                    print(f"  Reached {max_survived} survived mutants, skipping remaining {skipped} untested")
+                    break
+
+            msg = f"  Untested results: {untested_killed} killed, {untested_survived} survived{f', {skipped} skipped' if skipped else ''}"
+            print(msg)
+            if phase_logger:
+                phase_logger.log_parsing(msg)
 
     if not tested_mutants and not untested:
         print("Warning: No mutant files or log entries found")
@@ -204,6 +220,11 @@ def parse_mutahunter_results(
     if syntax_errors:
         print(f"  Syntax errors: {syntax_errors} (deleted)")
     print(f"Returning {len(mutant_entries)} survived mutant(s) for triage")
+    if phase_logger:
+        phase_logger.log_parsing(
+            f"Final: {len(killed_mutants)} killed, {len(survived_mutants)} survived, "
+            f"{syntax_errors} syntax errors, {len(mutant_entries)} sent to triage"
+        )
     return mutant_entries
 
 

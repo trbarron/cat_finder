@@ -22,6 +22,7 @@ from .test_applier import apply_test
 from .verifier import verify_test_kills_mutant
 from .test_fixer import fix_failed_test
 from .error_extractor import extract_pytest_error
+from .phase_logger import PhaseLogger
 import subprocess
 import sys
 
@@ -172,6 +173,7 @@ def process_mutant(
     max_iterations: int = 5,
     logger: AgentLogger = None,
     mutation_engine: str = "mutmut",
+    phase_logger: PhaseLogger | None = None,
 ) -> dict[str, Any]:
     """
     Process a single mutant: generate test, apply, verify.
@@ -250,13 +252,24 @@ def process_mutant(
             print(f"\n1. Generating test code...")
             print(f"   Agent prompt: {agent_prompt[:100]}...")
 
+            if phase_logger:
+                phase_logger.log_generation_request(mutant_id, agent_prompt)
+
             test_result = generate_test_code(
                 agent_prompt, test_file_path, existing_test_content, api_key, full_source_context,
-                full_source=full_source
+                full_source=full_source,
+                mutation_diff=diff,
             )
+
+            if phase_logger:
+                phase_logger.log_generation_response(mutant_id, test_result)
         else:
             # Iteration > 1: Fix the failed test
             print(f"\n1. Fixing test{iteration_suffix}...")
+
+            if phase_logger:
+                phase_logger.log_fixing_attempt(mutant_id, iteration, error_message)
+
             test_result = fix_failed_test(
                 test_code,
                 error_message,
@@ -266,6 +279,9 @@ def process_mutant(
                 agent_prompt,
                 api_key,
             )
+
+            if phase_logger:
+                phase_logger.log_fixing_response(mutant_id, iteration, test_result)
 
         if not test_result.get("success"):
             error_msg = test_result.get('error', 'Unknown error')
@@ -352,6 +368,9 @@ def process_mutant(
                 mutant_file_path=mutant_file_path,
             )
 
+            if phase_logger:
+                phase_logger.log_verification(mutant_id, f"attempt {iteration}", verify_success, verify_msg)
+
             if verify_success:
                 print(f"   PASS: {verify_msg}")
                 return {
@@ -430,6 +449,7 @@ def run_agent_loop(
     dry_run: bool = False,
     limit: int | None = None,
     mutation_engine: str = "mutmut",
+    phase_logger: PhaseLogger | None = None,
 ) -> dict[str, Any]:
     """
     Main agentic loop.
@@ -494,6 +514,8 @@ def run_agent_loop(
             mfile = entry.get("mutant_file")
             if mfile:
                 killed, _ = _verify_mutahunter_mutant(mid, mfile, test_file_path, package_dir)
+                if phase_logger:
+                    phase_logger.log_prefilter(mid, killed)
                 if killed:
                     already_killed_results.append({
                         "mutant_id": mid,
@@ -506,6 +528,8 @@ def run_agent_loop(
 
         filtered = len(already_killed_results)
         print(f"Pre-filter complete: {filtered} already killed, {len(remaining_triage)} remaining\n")
+        if phase_logger:
+            phase_logger.log_prefilter_summary(filtered, len(remaining_triage))
 
         if remaining_triage == [] and filtered > 0:
             print("WARNING: ALL mutants are already killed by existing tests.")
@@ -563,6 +587,7 @@ def run_agent_loop(
             dry_run,
             logger=logger,
             mutation_engine=mutation_engine,
+            phase_logger=phase_logger,
         )
         results.append(result)
 
@@ -612,5 +637,8 @@ def run_agent_loop(
 
     # Log summary
     logger.log_summary(summary)
+    if phase_logger:
+        phase_logger.log_summary(summary)
+        print(f"\nPhase logs: {phase_logger.dir}")
 
     return summary

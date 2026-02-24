@@ -8,8 +8,8 @@ import urllib.request
 from pathlib import Path
 
 
-LLM_MODEL = "gpt-5-mini"
-LLM_TEMPERATURE = 1  # gpt-5-mini only supports temperature=1
+LLM_MODEL = "gpt-4o-mini"
+LLM_TEMPERATURE = 1
 LLM_API_URL = "https://api.openai.com/v1/chat/completions"
 
 
@@ -89,6 +89,20 @@ Common issues to fix:
    - RIGHT: Or test via the code path that calls the function through the module
 
 8. **Stdlib imports (threading, uuid, datetime, etc.) ARE allowed inside test methods.**
+
+9. **NEVER use source inspection as a fix strategy:**
+   - NEVER use `inspect.getsource()` to check source code text
+   - Tests must verify BEHAVIOR (call the function, check results/side effects), not source text
+   - If a behavioral test is hard to write, simplify the test approach rather than falling back to source inspection
+
+10. **Module-level constants vs function parameter defaults:**
+    - If the mutant targets a module-level constant, the test must exercise the code path that actually uses it
+    - Check function signatures for actual default values -- don't assume a function uses a module constant
+
+11. **Don't duplicate existing test coverage:**
+    - If the fix makes the test equivalent to an existing test (same branch, same kind of input), it won't kill the mutant
+    - Focus on the EXACT boundary the mutant changes and pick an input that sits on that boundary
+    - Example: testing empty strings vs None for a falsy check covers the same branch -- find a different approach
 
 Output JSON format:
 {

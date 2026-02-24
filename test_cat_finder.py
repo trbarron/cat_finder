@@ -81,6 +81,17 @@ class TestIsImageTooDark(unittest.TestCase):
         request.make_array.return_value = np.full((100, 100, 3), 30, dtype=np.uint8)
         self.assertFalse(is_image_too_dark(request, darkness_threshold=30))
 
+    def test_mean_brightness_just_below_threshold(self):
+        """Ensure an image with average brightness 20 is considered too dark for threshold=30.
+
+        The original code computes mean(arr)=20 -> 20 < 30 -> True. The mutant adds +10, giving 30,
+        which would incorrectly make the function return False. This input kills that mutant.
+        """
+        request = MagicMock()
+        # Create an image with mean brightness = 20
+        request.make_array.return_value = np.full((100, 100, 3), 20, dtype=np.uint8)
+        self.assertTrue(is_image_too_dark(request, darkness_threshold=30))
+
 
 class TestParseClassificationResults(unittest.TestCase):
     def test_valid_output(self):
@@ -175,6 +186,70 @@ class TestParseClassificationResults(unittest.TestCase):
 
         results = parse_classification_results(imx500, request, intrinsics, last_detections)
         self.assertEqual(results, last_detections)
+
+    @patch('cat_finder.softmax')
+    def test_softmax_not_applied_when_flag_false(self, mock_softmax):
+        """Ensure that when intrinsics.softmax is False, softmax is NOT applied and raw scores are used.
+
+        The patched softmax returns a distribution that would change the top class if it were applied.
+        The original behavior (no softmax when intrinsics.softmax is False) should keep idx 1 with score 0.8.
+        """
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+
+        # Model raw output where class 1 is highest (0.8)
+        output = np.array([[0.1, 0.8, 0.1]])
+        imx500.get_outputs.return_value = [output]
+
+        # If softmax were applied it would (in this test) return a different distribution
+        mock_softmax.side_effect = lambda x: np.array([0.9, 0.05, 0.05])
+
+        results = parse_classification_results(imx500, request, intrinsics, [])
+        self.assertEqual(len(results), 3)
+        # Original behavior: top index remains 1 with raw score 0.8
+        self.assertEqual(results[0].idx, 1)
+        self.assertAlmostEqual(results[0].score, 0.8)
+        # Verify softmax was not called for the original code path
+        mock_softmax.assert_not_called()
+
+    def test_consecutive_match_records_correct_confidence(self):
+        """Ensure that when a consecutive detection exceeds the 0.75 threshold,
+        the confidence written to DynamoDB is int(confidence * 100) (original behavior).
+
+        This will fail for the mutant that adds 100 to the stored confidence.
+        """
+        imx500 = MagicMock()
+        request = MagicMock()
+        intrinsics = MagicMock()
+        intrinsics.softmax = False
+        data_table = MagicMock()
+        url_table = MagicMock()
+        s3_client = MagicMock()
+        labels = ["neither", "checo", "tuni"]
+
+        # Bright image so darkness check passes
+        request.make_array.return_value = np.full((100, 100, 3), 150, dtype=np.uint8)
+        # Top class is index 1 ("checo") with confidence slightly above 0.75
+        confidence = 0.76
+        imx500.get_outputs.return_value = [np.array([[0.05, confidence, 0.19]])]
+
+        result = process_detection(
+            request, imx500, intrinsics,
+            data_table, url_table, s3_client,
+            labels, s3_bucket="bucket",
+            previous_label="checo", darkness_threshold=30
+        )
+
+        # Verify returned label and that DynamoDB was written once
+        self.assertEqual(result, "checo")
+        data_table.put_item.assert_called_once()
+
+        # Check the exact confidence value stored matches original behavior
+        item = data_table.put_item.call_args[1]['Item']
+        self.assertEqual(item['confidence'], int(confidence * 100))
+
 
 class TestAddToDataDynamodb(unittest.TestCase):
     def test_correct_item_structure(self):

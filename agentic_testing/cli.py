@@ -42,6 +42,7 @@ from .triage import (
 )
 from .agent_loop import run_agent_loop
 from .mutahunter_parser import parse_mutahunter_results
+from .phase_logger import PhaseLogger
 
 
 def run_mutahunter(
@@ -49,6 +50,7 @@ def run_mutahunter(
     source_file: str = "cat_finder.py",
     test_file: str = "test_cat_finder.py",
     model: str = "gpt-5-mini",
+    phase_logger: "PhaseLogger | None" = None,
 ) -> bool:
     """Run mutahunter to generate LLM-powered mutations."""
     print("\n" + "=" * 80)
@@ -84,9 +86,12 @@ def run_mutahunter(
     if not success:
         return False
 
+    if phase_logger:
+        phase_logger.log_mutation("mutahunter", source_file, f"Model: {model}, test_file: {test_file}")
+
     # Parse mutahunter results
     print("\nParsing mutahunter results...")
-    mutant_entries = parse_mutahunter_results(package_dir, source_file)
+    mutant_entries = parse_mutahunter_results(package_dir, source_file, phase_logger=phase_logger)
 
     # Cache parsed results
     cache_dir = package_dir / ".agentic_testing_cache"
@@ -98,7 +103,7 @@ def run_mutahunter(
     return True
 
 
-def run_mutmut(package_dir: Path, source_file: str = "cat_finder.py") -> bool:
+def run_mutmut(package_dir: Path, source_file: str = "cat_finder.py", phase_logger: "PhaseLogger | None" = None) -> bool:
     """Run mutmut to generate mutations."""
     print("\n" + "=" * 80)
     print("STEP 1: MUTATION GENERATION (Rule-Based)")
@@ -129,6 +134,9 @@ def run_mutmut(package_dir: Path, source_file: str = "cat_finder.py") -> bool:
         if result.stderr:
             print(result.stderr, file=sys.stderr)
 
+        if phase_logger:
+            phase_logger.log_mutation("mutmut", source_file, result.stdout + (result.stderr or ""))
+
         # Generate results file
         results_cmd = [python_cmd, str(mutmut_wrapper), "results"]
         cache_dir = package_dir / ".agentic_testing_cache"
@@ -152,7 +160,8 @@ def run_mutmut(package_dir: Path, source_file: str = "cat_finder.py") -> bool:
 
 
 def triage_mutahunter_entries(
-    mutant_entries: list[dict], package_dir: Path, api_key: str
+    mutant_entries: list[dict], package_dir: Path, api_key: str,
+    phase_logger: "PhaseLogger | None" = None,
 ) -> list[dict]:
     """Triage mutahunter mutant entries with LLM."""
     triaged_mutants = []
@@ -199,8 +208,14 @@ def triage_mutahunter_entries(
 
         # Build prompt and call LLM
         prompt = build_llm_prompt(triage_entry)
+        if phase_logger:
+            phase_logger.log_triage_request(mutant_id, prompt)
+
         analysis = fetch_llm_analysis(prompt, api_key)
         triage_entry["llm_analysis"] = analysis
+
+        if phase_logger:
+            phase_logger.log_triage_response(mutant_id, analysis)
 
         should_write = analysis.get("should_write_test", False)
         reason = analysis.get("reason", "")
@@ -220,6 +235,7 @@ def triage_mutants(
     api_key: str,
     limit: int | None = None,
     mutation_engine: str = "mutmut",
+    phase_logger: "PhaseLogger | None" = None,
 ) -> list[dict]:
     """
     Run triage on survived mutants using LLM.
@@ -249,7 +265,7 @@ def triage_mutants(
             print(f"Limited to first {limit} mutant(s)")
 
         # Process mutahunter entries (already have diff and source info)
-        return triage_mutahunter_entries(mutant_entries, package_dir, api_key)
+        return triage_mutahunter_entries(mutant_entries, package_dir, api_key, phase_logger=phase_logger)
 
     else:
         # Original mutmut logic
@@ -316,8 +332,14 @@ def triage_mutants(
 
         # Build prompt and call LLM
         prompt = build_llm_prompt(entry)
+        if phase_logger:
+            phase_logger.log_triage_request(mutant_id, prompt)
+
         analysis = fetch_llm_analysis(prompt, api_key)
         entry["llm_analysis"] = analysis
+
+        if phase_logger:
+            phase_logger.log_triage_response(mutant_id, analysis)
 
         should_write = analysis.get("should_write_test", False)
         reason = analysis.get("reason", "")
@@ -505,13 +527,19 @@ def main() -> int:
     print("Inspired by Meta's ACH System".center(80))
     print("=" * 80)
 
+    # Create phase logger for this run
+    cache_dir = package_dir / ".agentic_testing_cache"
+    cache_dir.mkdir(exist_ok=True)
+    phase_logger = PhaseLogger(cache_dir)
+    print(f"Logs: {phase_logger.dir}")
+
     # Step 1: Run mutation engine (unless skipped)
     if not args.skip_mutmut:
         if args.mutation_engine == "mutmut":
-            if not run_mutmut(package_dir, args.source_file):
+            if not run_mutmut(package_dir, args.source_file, phase_logger=phase_logger):
                 return 1
         elif args.mutation_engine == "mutahunter":
-            if not run_mutahunter(package_dir, args.source_file, args.test_file):
+            if not run_mutahunter(package_dir, args.source_file, args.test_file, phase_logger=phase_logger):
                 return 1
         else:
             print(f"Unknown mutation engine: {args.mutation_engine}", file=sys.stderr)
@@ -530,7 +558,8 @@ def main() -> int:
         triage_results = json.loads(triage_cache_path.read_text())
     else:
         triage_results = triage_mutants(
-            package_dir, api_key, args.limit, args.mutation_engine
+            package_dir, api_key, args.limit, args.mutation_engine,
+            phase_logger=phase_logger,
         )
 
         # Cache triage results
@@ -558,6 +587,7 @@ def main() -> int:
         dry_run=args.dry_run,
         limit=args.limit,
         mutation_engine=args.mutation_engine,
+        phase_logger=phase_logger,
     )
 
     # Step 4: Create PR if auto mode and not dry run
