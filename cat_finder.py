@@ -96,11 +96,9 @@ def add_to_data_dynamodb(dynamodb_table, timestamp, image_name, cat_label, cat_c
     print(f"Added entry to data DynamoDB: {timestamp}, {image_name}, {cat_label}, {cat_confidence}")
 
 def add_to_url_dynamodb(dynamodb_table, s3_url):
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    unique_id = f"{timestamp}_{uuid.uuid4()}"
     dynamodb_table.put_item(
         Item={
-            'URL': unique_id,
+            'URL': 'url',
             'URL_value': s3_url
         }
     )
@@ -166,22 +164,22 @@ def process_detection(request, imx500, intrinsics, data_table, url_table, s3_cli
 
         if label == previous_label and confidence > 0.75 and label != 'neither':
             print(f"Consecutive detection confirmed: {label}")
-
             add_to_data_dynamodb(data_table, current_datetime, image_name, label, int(confidence * 100))
 
-            if is_button_triggered:
-                dir_path = os.path.join('imgs', image_name)
-                os.makedirs(os.path.dirname(dir_path), exist_ok=True)
-                request.save("main", dir_path)
+        if is_button_triggered and label != 'neither':
+            print(f"Button-triggered upload: {label}")
+            dir_path = os.path.join('imgs', image_name)
+            os.makedirs(os.path.dirname(dir_path), exist_ok=True)
+            request.save("main", dir_path)
 
-                s3_url = upload_to_s3(s3_client, dir_path, s3_bucket, image_name)
-                if s3_url:
-                    add_to_url_dynamodb(url_table, s3_url)
-                    if os.path.exists(dir_path):
-                        os.remove(dir_path)
-                        print(f"Image {dir_path} deleted.")
-                else:
-                    print(f"S3 upload failed, keeping local image: {dir_path}")
+            s3_url = upload_to_s3(s3_client, dir_path, s3_bucket, image_name)
+            if s3_url:
+                add_to_url_dynamodb(url_table, s3_url)
+                if os.path.exists(dir_path):
+                    os.remove(dir_path)
+                    print(f"Image {dir_path} deleted.")
+            else:
+                print(f"S3 upload failed, keeping local image: {dir_path}")
 
         return label
     return previous_label
