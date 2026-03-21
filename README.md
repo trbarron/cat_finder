@@ -15,6 +15,15 @@ Images that are too dark (below a configurable brightness threshold) are automat
 - Push button connected to GPIO 17
 - pigpio daemon running (`sudo pigpiod`)
 
+## Wiring
+
+| Component | Pi Connection |
+|-----------|--------------|
+| Button leg A | GPIO 17 (Pin 11) |
+| Button leg B | GND (Pin 6) |
+
+The button uses the internal pull-up resistor; pressing it pulls GPIO 17 LOW.
+
 ## Software Dependencies
 
 - Python 3
