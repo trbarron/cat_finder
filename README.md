@@ -19,7 +19,6 @@ Images that are too dark (below a configurable brightness threshold) are automat
 
 | Component | Pi Connection |
 |-----------|--------------|
-| IMX500 Camera | CSI ribbon cable |
 | Button leg A | GPIO 17 (Pin 11) |
 | Button leg B | GND (Pin 6) |
 
