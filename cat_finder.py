@@ -264,19 +264,20 @@ def main():
     try:
         while True:
             request = picam2.capture_request()
-            
-            with button_press_lock:
-                if button_pressed_flag[0]:
-                    print("Processing button-triggered image")
-                    previous_label = process_detection(request, imx500, intrinsics, data_table, url_table, s3_client, labels,
-                                                       s3_bucket=s3_bucket, is_button_triggered=True, previous_label=previous_label, darkness_threshold=DARKNESS_THRESHOLD)
-                    button_pressed_flag[0] = False
-                else:
-                    print("Processing regular cycle image")
-                    previous_label = process_detection(request, imx500, intrinsics, data_table, url_table, s3_client, labels,
-                                                       s3_bucket=s3_bucket, previous_label=previous_label, darkness_threshold=DARKNESS_THRESHOLD)
-            
-            request.release()
+
+            try:
+                with button_press_lock:
+                    if button_pressed_flag[0]:
+                        print("Processing button-triggered image")
+                        previous_label = process_detection(request, imx500, intrinsics, data_table, url_table, s3_client, labels,
+                                                           s3_bucket=s3_bucket, is_button_triggered=True, previous_label=previous_label, darkness_threshold=DARKNESS_THRESHOLD)
+                        button_pressed_flag[0] = False
+                    else:
+                        print("Processing regular cycle image")
+                        previous_label = process_detection(request, imx500, intrinsics, data_table, url_table, s3_client, labels,
+                                                           s3_bucket=s3_bucket, previous_label=previous_label, darkness_threshold=DARKNESS_THRESHOLD)
+            finally:
+                request.release()
             time.sleep(41)
             
     except KeyboardInterrupt:

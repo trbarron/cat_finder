@@ -230,33 +230,27 @@ class TestAddToDataDynamodb(unittest.TestCase):
 
 
 class TestAddToUrlDynamodb(unittest.TestCase):
-    def test_unique_key(self):
+    def test_static_key(self):
+        # The URL table holds a single "latest image" row, overwritten
+        # on each upload under the fixed key 'url'.
         table = MagicMock()
         add_to_url_dynamodb(table, "https://bucket.s3.amazonaws.com/img.jpg")
 
         table.put_item.assert_called_once()
         item = table.put_item.call_args[1]['Item']
+        self.assertEqual(item['URL'], 'url')
         self.assertEqual(item['URL_value'], "https://bucket.s3.amazonaws.com/img.jpg")
-        # Key should not be the static string 'url'
-        self.assertNotEqual(item['URL'], 'url')
-        # Key should contain a UUID (36 chars with dashes)
-        self.assertGreater(len(item['URL']), 36)
+
+    def test_overwrites_same_key(self):
+        table = MagicMock()
+        add_to_url_dynamodb(table, "s3://bucket/first.jpg")
+        add_to_url_dynamodb(table, "s3://bucket/second.jpg")
+
+        keys = [call[1]['Item']['URL'] for call in table.put_item.call_args_list]
+        self.assertEqual(keys, ['url', 'url'])
+        self.assertEqual(table.put_item.call_args_list[1][1]['Item']['URL_value'], "s3://bucket/second.jpg")
 
 
-    @patch('cat_finder.uuid')
-    @patch('cat_finder.datetime')
-    def test_add_to_url_includes_timestamp(self, mock_datetime, mock_uuid):
-        mock_datetime.now.return_value.strftime.return_value = '2020-01-02_03-04-05'
-        mock_uuid.uuid4.return_value = 'fixed-uuid'
-        mock_table = MagicMock()
-        s3_url = 's3://bucket/object'
-
-        add_to_url_dynamodb(mock_table, s3_url)
-
-        mock_table.put_item.assert_called_once()
-        item = mock_table.put_item.call_args[1]['Item']
-        expected = '2020-01-02_03-04-05_fixed-uuid'
-        self.assertTrue(any(expected in str(v) for v in item.values()))
 class TestUploadToS3(unittest.TestCase):
     def test_success(self):
         client = MagicMock()

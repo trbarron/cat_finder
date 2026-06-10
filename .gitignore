@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 imgs/
+.DS_Store
+.coverage
+.localized
 mutants/
 .mutmut-cache/
 mutation_testing/*.txt
@@ -14,3 +17,6 @@ agentic_testing/venv/
 agentic_testing/.agentic_testing_cache/
 .agentic_testing_cache/
 logs/
+
+# Separate website repo temporarily nested here; do not commit
+tylerbarron-dot-com/

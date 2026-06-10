@@ -89,6 +89,14 @@ The script will:
 
 Stop with `Ctrl+C`.
 
+## AWS Backend
+
+Detections land in two DynamoDB tables (`catData` for detection entries,
+a URL table holding the latest S3 image URL). The `lambda/` directory
+contains the AWS Lambda functions that serve this data to the website —
+see [lambda/README.md](lambda/README.md). They are deployed manually via
+the Lambda console.
+
 ### Auto-restart with cron
 
 Use `monitor_script.sh` to automatically restart the script if it stops:
