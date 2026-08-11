@@ -194,6 +194,12 @@ REQUIRED_ENV_VARS = [
 ]
 
 def main():
+    # Line-buffer stdout. When output is redirected to a file (as monitor_script.sh
+    # does) Python block-buffers it, so ~9 minutes of prints can sit unwritten and
+    # the log looks frozen even though the loop is running fine. The watchdog treats
+    # a stale log as a hung process, so the log has to stay current.
+    sys.stdout.reconfigure(line_buffering=True)
+
     load_dotenv()
 
     missing = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]

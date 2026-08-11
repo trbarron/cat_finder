@@ -20,33 +20,37 @@ SCRIPT_NAME="cat_finder"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_FILE="$SCRIPT_DIR/$SCRIPT_NAME.log"
 
-# Normal cycle is ~41s; anything several minutes quiet with no log growth
-# means the process is hung, not just between cycles.
-STALE_SECS=300
+# The main loop logs every ~41s, so a log this quiet means the process is wedged
+# rather than just between cycles. Kept well above the cycle time (and above the
+# camera's startup, which the IMX500 firmware upload can stretch out) so a slow
+# start is never mistaken for a hang - the failure this catches lasted 15 days,
+# so there is nothing to gain from reacting faster.
+STALE_SECS=600
 
-PID=$(pgrep -f "$SCRIPT_NAME.py")
+PIDS=$(pgrep -f "$SCRIPT_NAME.py")
 
-if [ -n "$PID" ] && [ -f "$LOG_FILE" ]; then
-    NOW=$(date +%s)
-    LAST_WRITE=$(stat -c %Y "$LOG_FILE")
-    AGE=$((NOW - LAST_WRITE))
+if [ -n "$PIDS" ] && [ -f "$LOG_FILE" ]; then
+    AGE=$(( $(date +%s) - $(stat -c %Y "$LOG_FILE") ))
 
     if [ "$AGE" -gt "$STALE_SECS" ]; then
-        echo "$SCRIPT_NAME (pid $PID) looks hung - log has not grown in ${AGE}s, restarting"
-        kill -9 "$PID"
-        # Wait for the process to actually die before we start a fresh one.
+        echo "$SCRIPT_NAME looks hung - log has not grown in ${AGE}s, restarting"
+        kill -9 $PIDS
+        # Wait for it to actually die before starting a fresh one, so the
+        # replacement doesn't race the old process for the camera.
         for _ in $(seq 1 10); do
-            kill -0 "$PID" 2>/dev/null || break
+            pgrep -f "$SCRIPT_NAME.py" > /dev/null || break
             sleep 1
         done
-        PID=""
+        PIDS=""
     fi
 fi
 
-if [ -n "$PID" ]; then
+if [ -n "$PIDS" ]; then
     echo "$SCRIPT_NAME is running"
 else
     echo "$SCRIPT_NAME is not running, starting it"
     cd "$SCRIPT_DIR" || exit 1
-    nohup python "$SCRIPT_DIR/$SCRIPT_NAME.py" >> "$LOG_FILE" 2>&1 &
+    # -u as a backstop: the staleness check above is only meaningful if the
+    # script's output actually reaches the log promptly.
+    nohup python -u "$SCRIPT_DIR/$SCRIPT_NAME.py" >> "$LOG_FILE" 2>&1 &
 fi
