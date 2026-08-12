@@ -1,6 +1,7 @@
 import numpy as np
 import boto3
-from botocore.exceptions import ClientError
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 import os
 from datetime import datetime
 import sys
@@ -13,6 +14,42 @@ from picamera2 import Picamera2
 from picamera2.devices import IMX500
 from picamera2.devices.imx500 import NetworkIntrinsics
 from picamera2.devices.imx500.postprocess import softmax
+
+# Transient DNS failures used to propagate out of the main loop and kill the script.
+AWS_CONFIG = Config(
+    connect_timeout=10,
+    read_timeout=10,
+    retries={"max_attempts": 3, "mode": "standard"},
+)
+
+class TimestampedStream:
+    """Prefix each output line with the local time.
+
+    Wrapping the stream leaves the print() calls unchanged. The prefix is only
+    added after a newline, so the \\r-redrawing progress bar stays on one line.
+    """
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._at_line_start = True
+
+    def write(self, text):
+        lines = text.split("\n")
+        for i, line in enumerate(lines):
+            if line and self._at_line_start:
+                self._stream.write(datetime.now().strftime("%Y-%m-%d %H:%M:%S "))
+                self._at_line_start = False
+            if line:
+                self._stream.write(line)
+            if i < len(lines) - 1:
+                self._stream.write("\n")
+                self._at_line_start = True
+
+    def flush(self):
+        self._stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
 
 class Classification:
     def __init__(self, idx: int, score: float):
@@ -84,25 +121,35 @@ def parse_classification_results(imx500, request, intrinsics, last_detections):
 
 def add_to_data_dynamodb(dynamodb_table, timestamp, image_name, cat_label, cat_confidence):
     date = timestamp.split('_')[0]
-    dynamodb_table.put_item(
-        Item={
-            'Date': date,
-            'Timestamp': timestamp,
-            'image_name': image_name,
-            'label': cat_label,
-            'confidence': cat_confidence
-        }
-    )
+    try:
+        dynamodb_table.put_item(
+            Item={
+                'Date': date,
+                'Timestamp': timestamp,
+                'image_name': image_name,
+                'label': cat_label,
+                'confidence': cat_confidence
+            }
+        )
+    except (BotoCoreError, ClientError) as e:
+        print(f"Error writing detection to DynamoDB: {e}")
+        return False
     print(f"Added entry to data DynamoDB: {timestamp}, {image_name}, {cat_label}, {cat_confidence}")
+    return True
 
 def add_to_url_dynamodb(dynamodb_table, s3_url):
-    dynamodb_table.put_item(
-        Item={
-            'URL': 'url',
-            'URL_value': s3_url
-        }
-    )
+    try:
+        dynamodb_table.put_item(
+            Item={
+                'URL': 'url',
+                'URL_value': s3_url
+            }
+        )
+    except (BotoCoreError, ClientError) as e:
+        print(f"Error writing URL to DynamoDB: {e}")
+        return False
     print(f"Added entry to URL DynamoDB: {s3_url}")
+    return True
 
 def upload_to_s3(s3_client, file_name, bucket, object_name=None):
     if object_name is None:
@@ -110,7 +157,8 @@ def upload_to_s3(s3_client, file_name, bucket, object_name=None):
 
     try:
         s3_client.upload_file(file_name, bucket, object_name)
-    except ClientError as e:
+    except (BotoCoreError, ClientError) as e:
+        # BotoCoreError covers the DNS/connection failures ClientError misses.
         print(f"Error uploading to S3: {e}")
         return None
 
@@ -194,6 +242,14 @@ REQUIRED_ENV_VARS = [
 ]
 
 def main():
+    # Redirected to a file, Python block-buffers stdout: that delayed the log by
+    # ~9 minutes and made a healthy run look hung to the watchdog.
+    if hasattr(sys.stdout, "reconfigure"):  # a captured StringIO has none
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    sys.stdout = TimestampedStream(sys.stdout)
+    sys.stderr = TimestampedStream(sys.stderr)
+
     load_dotenv()
 
     missing = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
@@ -207,7 +263,8 @@ def main():
     dynamodb = boto3.resource('dynamodb',
         aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
         aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.getenv('AWS_REGION')
+        region_name=os.getenv('AWS_REGION'),
+        config=AWS_CONFIG
     )
     data_table = dynamodb.Table(os.getenv('DYNAMODB_DATA_TABLE_NAME'))
     url_table = dynamodb.Table(os.getenv('DYNAMODB_URL_TABLE_NAME'))
@@ -215,7 +272,8 @@ def main():
     s3_client = boto3.client('s3',
         aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
         aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-        region_name=os.getenv('AWS_REGION')
+        region_name=os.getenv('AWS_REGION'),
+        config=AWS_CONFIG
     )
     
     pi = pigpio.pi()

@@ -105,3 +105,16 @@ Use `monitor_script.sh` to automatically restart the script if it stops:
 crontab -e
 # Add: */5 * * * * /path/to/monitor_script.sh
 ```
+
+The watchdog restarts the script when no process is running, and also when one
+is running but its log has not grown for 10 minutes — the camera pipeline can
+wedge inside the kernel, leaving the process alive but frozen, which a liveness
+check alone reports as healthy.
+
+### Log rotation
+
+`cat_finder.log` grows without bound, so install the provided logrotate config:
+
+```bash
+sudo cp catfinder.logrotate /etc/logrotate.d/catfinder
+```

@@ -1,0 +1,15 @@
+# Install: sudo cp catfinder.logrotate /etc/logrotate.d/catfinder
+#
+# copytruncate is required: the launcher opens the log with `>>` and the process
+# holds that fd for its whole life, so it never reopens the path.
+
+/home/admin/CatFinder/cat_finder.log {
+    daily
+    rotate 7
+    maxsize 10M
+    copytruncate
+    compress
+    delaycompress
+    missingok
+    notifempty
+}
