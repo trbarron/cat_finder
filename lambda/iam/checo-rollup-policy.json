@@ -1,0 +1,36 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Logs",
+      "Effect": "Allow",
+      "Action": ["logs:CreateLogStream", "logs:PutLogEvents"],
+      "Resource": "arn:aws:logs:us-west-2:027237787789:log-group:/aws/lambda/ChecoCleanUpDB:*"
+    },
+    {
+      "Sid": "ReadAndDeleteRawRows",
+      "Effect": "Allow",
+      "Action": ["dynamodb:Scan", "dynamodb:BatchWriteItem"],
+      "Resource": "arn:aws:dynamodb:us-west-2:027237787789:table/catData"
+    },
+    {
+      "Sid": "WriteDailySummaries",
+      "Effect": "Allow",
+      "Action": ["dynamodb:Scan", "dynamodb:GetItem", "dynamodb:PutItem"],
+      "Resource": "arn:aws:dynamodb:us-west-2:027237787789:table/catDataRollup"
+    },
+    {
+      "Sid": "RawEntryArchive",
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": "arn:aws:s3:::catbucketimages/catdata-archive/*"
+    },
+    {
+      "Sid": "ArchiveListingSoMissingDaysReturn404",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::catbucketimages",
+      "Condition": { "StringLike": { "s3:prefix": "catdata-archive/*" } }
+    }
+  ]
+}
