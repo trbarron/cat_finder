@@ -1,0 +1,14 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ReadCatTables",
+      "Effect": "Allow",
+      "Action": ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:Scan"],
+      "Resource": [
+        "arn:aws:dynamodb:us-west-2:027237787789:table/catData",
+        "arn:aws:dynamodb:us-west-2:027237787789:table/catDataRollup"
+      ]
+    }
+  ]
+}

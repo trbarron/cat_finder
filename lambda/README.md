@@ -20,8 +20,10 @@ either side.
 | `checo_cleanup_db.py` | `ChecoCleanUpDB` | EventBridge rule `CatDataRollup`, daily 02:00 UTC | archives old `catData` rows to S3, writes per-day summaries to `catDataRollup` |
 
 All run on Python 3.12. The two `checoRestEndpoint*` functions share the IAM
-role `checoRestEndpoint-role-eze0wrv5`; `getCatImage` has its own role, and
-`ChecoCleanUpDB` runs as `checo-rollup-role` (policy in `iam/`). The Pi
+role `checoRestEndpoint-role-eze0wrv5`, which can only read `catData` and
+`catDataRollup` (`iam/checo-api-tables-policy.json`, deployed as
+`getChecoTable2Policy`); `getCatImage` has its own role, and
+`ChecoCleanUpDB` runs as `checo-rollup-role` (`iam/checo-rollup-*.json`). The Pi
 (`cat_finder.py`) writes `catData`, `catImageURL` and `catbucketimages`
 directly as the IAM user `checoLogger`.
 
