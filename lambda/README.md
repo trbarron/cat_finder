@@ -16,10 +16,11 @@ either side.
 | `checo_rest_endpoint.py` | `checoRestEndpoint` | API Gateway `nj3ho46btl`, `GET /checoStage/checoRestEndpoint` | reads `catData` |
 | `checo_rest_endpoint_details.py` | `checoRestEndpointDetails` | API Gateway `nj3ho46btl`, `GET /checoStage/checoRestEndpoint/details` | reads `catData`, `catDataRollup` |
 | `get_cat_image.py` | `getCatImage` | API Gateway `nj3ho46btl`, `GET /checoStage/checoRestEndpoint/image` | reads `catImageURL`, S3 `catbucketimages` |
-| `checo_cleanup_db.py` | `ChecoCleanUpDB` | EventBridge rule `CatDataRollup`, daily 02:00 UTC | moves `catData` rows into `catDataRollup` |
+| `checo_cleanup_db.py` | `ChecoCleanUpDB` | EventBridge rule `CatDataRollup`, daily 02:00 UTC | archives old `catData` rows to S3, writes per-day summaries to `catDataRollup` |
 
-All run on Python 3.12. The first, second and fourth share the IAM role
-`checoRestEndpoint-role-eze0wrv5`; `getCatImage` has its own role. The Pi
+All run on Python 3.12. The two `checoRestEndpoint*` functions share the IAM
+role `checoRestEndpoint-role-eze0wrv5`; `getCatImage` has its own role, and
+`ChecoCleanUpDB` runs as `checo-rollup-role` (policy in `iam/`). The Pi
 (`cat_finder.py`) writes `catData`, `catImageURL` and `catbucketimages`
 directly as the IAM user `checoLogger`.
 
@@ -84,10 +85,51 @@ object name.
 
 ### `checo_cleanup_db.py`
 
-Nightly rollup. Scans `catData` for entries dated before yesterday, writes
-one `catDataRollup` item per day (`Date`, `TotalEntries`, and the raw
-`Entries` list), then deletes the rolled-up rows from `catData`. Keeps
-`catData` small so the today view stays a cheap query.
+Nightly rollup. Scans `catData` (paginated) for entries dated before
+yesterday (UTC) and, one day at a time:
+
+1. Merges that day's rows into its S3 archive,
+   `s3://catbucketimages/catdata-archive/YYYY/YYYY-MM-DD.json`, keyed by
+   `Timestamp`.
+2. Rebuilds the day's summary from the whole archive and writes it to
+   `catDataRollup`.
+3. Deletes only that day's rows from `catData`.
+
+Rows are deleted last, so a failure at any step leaves them in `catData` for
+the next run, and the merge means re-runs and late-arriving rows never
+double-count.
+
+#### Rollup format (version 2)
+
+One ~1 KB item per day, independent of how busy the day was:
+
+```json
+{
+  "Date": "2026-09-30",
+  "Version": 2,
+  "TotalEntries": 702,                       // every row, including "none"
+  "CatCounts": {"tuni": 310, "checo": 380, "other": 0},
+  "HourlyCatCounts": {"tuni": [0, ..., 0], "checo": [...], "other": [...]},  // 24 Mountain-Time hours
+  "ArchiveKey": "catdata-archive/2026/2026-09-30.json"
+}
+```
+
+`CatCounts` and `HourlyCatCounts` count work entries exactly as the details
+endpoint counts raw rows (skipping `none`/`neither`; generic labels go to
+`other`), so the details response is unchanged. Before this format, each
+item held the day's raw `Entries` (up to 233 KB, close to DynamoDB's 400 KB
+item limit); the details endpoint still reads that legacy format, and
+`migrate_rollup_v2.py` converts it.
+
+#### Deploying the version-2 rollup
+
+1. Deploy `checo_rest_endpoint_details.py` (reads both formats).
+2. Create `checo-rollup-role` from `iam/`, then deploy `checo_cleanup_db.py`
+   to `ChecoCleanUpDB` and switch it to that role.
+3. From `lambda/`: `python3 migrate_rollup_v2.py --profile <admin>` (dry
+   run), then again with `--apply`. Safe to re-run.
+
+Tests: `python3 -m pytest lambda/test_rollup.py`.
 
 ## Fixes applied 2026-06-10
 
@@ -115,19 +157,12 @@ one `catDataRollup` item per day (`Date`, `TotalEntries`, and the raw
 - Work time assumes 43 s per entry while the Pi loop sleeps 41 s per cycle
   (plus processing time).
 - The details endpoint scans the full `catData` and `catDataRollup` tables
-  on every request; cost grows with table size. Fine at current volume
-  (~160k entries as of 2026-06; `catDataRollup` was 30.6 MB on 2026-10-02).
-- `checo_cleanup_db.py` (as deployed 2026-10-02):
-  - The delete loop runs inside the per-day loop and deletes every scanned
-    row, not just that day's. If a later day's rollup write fails, that
-    day's raw rows are already gone.
-  - `put_item` replaces an existing rollup for the same date, so rows that
-    arrive late for an already-rolled day overwrite it.
-  - One rollup item holds a whole day of raw entries, so a very busy day
-    could exceed DynamoDB's 400 KB item limit and fail every night.
-  - The `catData` scan isn't paginated (first 1 MB only).
-  - Its logs were not delivered from Aug 2024 until 2026-10-02, because the
-    shared role's logging permission only covered `checoRestEndpoint`.
+  on every request. With version-2 rollups that is ~1 KB per day of history
+  (about 275 KB for 2024-07 to 2026-09) plus up to two days of raw rows.
+- Version 1 of `checo_cleanup_db.py` (replaced 2026-10) deleted every
+  scanned row inside its per-day loop, overwrote a day's rollup when late
+  rows arrived, didn't paginate its scan, and stored raw entries in one item
+  per day. Its logs were also not delivered from Aug 2024 to 2026-10-02.
 
 A frontend-facing summary of these changes lives in the website repo at
 `docs/cat-tracker-api-changes.md`.

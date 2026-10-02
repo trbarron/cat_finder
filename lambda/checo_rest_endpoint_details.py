@@ -57,8 +57,15 @@ def scan_table(table):
     return items
 
 
+def split_rollup_items(rollup_items):
+    """Separate version-2 per-day summaries from legacy raw-entry rollups."""
+    summaries = [item for item in rollup_items if 'CatCounts' in item]
+    legacy = [item for item in rollup_items if 'CatCounts' not in item]
+    return summaries, legacy
+
+
 def unpack_rollup_entries(rollup_items):
-    """Unpack entries from catDataRollup items."""
+    """Unpack entries from legacy catDataRollup items."""
     unpacked_items = []
     for item in rollup_items:
         if 'Entries' in item:
@@ -102,8 +109,10 @@ def lambda_handler(event, context):
     thirty_days_ago = (now - timedelta(days=30)).strftime('%Y-%m-%d')
     seven_days_ago = (now - timedelta(days=7)).strftime('%Y-%m-%d')
 
-    # Scan both tables and combine
-    all_items = scan_table(table1) + unpack_rollup_entries(scan_table(table2))
+    # Raw entries come from catData plus any legacy rollups; version-2
+    # rollups are already summarised per day and are counted directly.
+    summaries, legacy_rollups = split_rollup_items(scan_table(table2))
+    all_items = scan_table(table1) + unpack_rollup_entries(legacy_rollups)
 
     # Entry counts per period, broken down by cat. Pre-custom-model rollup
     # data carries generic labels ("Siamese cat", "Egyptian cat", ...) that
@@ -111,8 +120,25 @@ def lambda_handler(event, context):
     periods = ('today', 'week', 'month', 'lifetime')
     counts = {period: defaultdict(int) for period in periods}
 
-    # Minutes of work per Mountain-Time hour over the last 30 days, per cat
-    histogram_data = defaultdict(lambda: defaultdict(float))
+    # Work entries per Mountain-Time hour over the last 30 days, per cat
+    histogram_data = defaultdict(lambda: defaultdict(int))
+
+    for summary in summaries:
+        item_date = summary['Date']
+        for cat_key, count in summary['CatCounts'].items():
+            count = int(count)
+            counts['lifetime'][cat_key] += count
+            if item_date == today:
+                counts['today'][cat_key] += count
+            if item_date >= seven_days_ago:
+                counts['week'][cat_key] += count
+            if item_date >= thirty_days_ago:
+                counts['month'][cat_key] += count
+        if item_date >= thirty_days_ago:
+            for cat_key, by_hour in summary['HourlyCatCounts'].items():
+                for hour, count in enumerate(by_hour):
+                    if count:
+                        histogram_data[hour][cat_key] += int(count)
 
     most_recent_cat_entry_time = None
     most_recent_cat_label = None
@@ -142,7 +168,7 @@ def lambda_handler(event, context):
             counts['week'][cat_key] += 1
         if item_date >= thirty_days_ago:
             counts['month'][cat_key] += 1
-            histogram_data[item_timestamp.hour][cat_key] += MINUTES_PER_ENTRY
+            histogram_data[item_timestamp.hour][cat_key] += 1
 
         if label in CATS and (not most_recent_cat_entry_time or item_timestamp > most_recent_cat_entry_time):
             most_recent_cat_entry_time = item_timestamp
@@ -173,10 +199,10 @@ def lambda_handler(event, context):
     histogram_for_recharts = [
         {
             "hour": hour,
-            "count": round(sum(by_cat.values()), 2),
-            "tuni": round(by_cat['tuni'], 2),
-            "checo": round(by_cat['checo'], 2),
-            "other": round(by_cat['other'], 2),
+            "count": round(sum(by_cat.values()) * MINUTES_PER_ENTRY, 2),
+            "tuni": round(by_cat['tuni'] * MINUTES_PER_ENTRY, 2),
+            "checo": round(by_cat['checo'] * MINUTES_PER_ENTRY, 2),
+            "other": round(by_cat['other'] * MINUTES_PER_ENTRY, 2),
         }
         for hour, by_cat in sorted(histogram_data.items())
     ]
