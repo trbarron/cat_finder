@@ -6,8 +6,9 @@ into the Lambda console), so keep this directory in sync when editing
 either side.
 
 > **Deployment status:** all four files match the code deployed in us-west-2
-> as of 2026-10-02. The 2026-06-10 fixes below are live (both endpoints were
-> last updated 2026-06-10).
+> as of 2026-10-02, including the version-2 rollup (all 642 historical days
+> migrated). That cut the details endpoint from ~23 s to ~0.65 s per
+> request with an identical response.
 
 ## Deployment map
 
